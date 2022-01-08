@@ -102,21 +102,129 @@ I think the big questions are:
 
 
 # DATA PREPARATION SECTION
-```{r census}
-# https://walker-data.com/tidycensus/articles/basic-usage.html
+```{r tidy_census}
+# https://walker-data.com/tidycensus/articles/basic-usage.html 
 # load_variables() takes two required arguments: year of Census or endyear of ACS sample, and dataset name
 # For decennial Census, possible dataset choices include "pl" for the redistricting files (currently the only choice for 2020), "sf1" or "sf2" (2000 and 2010) and "sf3" or "sf4" (2000 only)
 #  For ACS, use either "acs1" or "acs5" for the ACS detailed tables, and append /profile for the Data Profile and /subject for the Subject Tables.
 
 # 5-year ACS for all geographies down to the block group level starting with 2005-2009
 
+#.. get_acs and geography ----
+# https://walker-data.com/tidycensus/articles/basic-usage.html#working-with-acs-data-1
+# geography="county subdivision", state="NY", county="Washington", # gets all in county
+# geography="place", state="NY", # DON'T USE COUNTY, gets all in state
+# geography="school district (unified)", state="NY", # DON'T USE COUNTY, gets all
+# geography="zcta", state="NY", zcta=c(12816, 12834) # DON'T USE COUNTY, gets all
+
+# keep_geo_vars=TRUE doesn't seem to matter for what I'm doing
+
+year <- 2019
+
+# state
+df <- get_acs(geography="state",
+                   state="NY",
+                   variables="B01002_001",
+                   year=year)
+
+# county
+df <- get_acs(geography="county",
+              state="NY",
+              county=c("Albany", "Saratoga", "Warren", "Washington"),
+              variables="B01002_001",
+              year=year)
+
+df <- get_acs(geography="county subdivision",
+                   state="NY",
+                   county="Washington",
+                   variables="B01002_001",
+                   year=year)
+
+
+# county subdivisions
+df <- get_acs(geography="county subdivision",
+                   state="NY",
+                   county="Washington",
+                   variables="B01002_001",
+                   year=year) 
+# 3611502561 Argyle town, Washington County, New York
+# 3611511836 Cambridge town, Washington County, New York
+# 3611522656 Easton town, Washington County, New York
+# 3611530686 Greenwich town, Washington County, New York
+# 3611538143 Jackson town, Washington County, New York
+# 3611564782 Salem town, Washington County, New York
+# 3611581578 White Creek town, Washington County, New York
+
+
+
+# places
+df <- get_acs(geography="place",
+                   state="NY",
+                   # county="Washington",
+                   variables="B01002_001",
+                   year=year)
+# 3602550 Argyle village, New York
+# 3611825 Cambridge village, New York
+# 3630675 Greenwich village, New York
+# 3664771 Salem CDP, New York
+# 3665255 Saratoga Springs city, New York
+# 3665750 Schuylerville village, New York
+places <- c("3602550", "3611825", "3630675", "3664771", "3665255", "3665750")
+
+
+# school districts
+df <- get_acs(geography="school district (unified)",
+              state="NY",
+              # county="Washington",
+              variables="B01002_001", # Estimate!!Median age!!Total
+              year=year)
+# 3603210 Argyle Central School District, New York
+# 3606210 Cambridge Central School District, New York
+# 3612900 Greenwich Central School District, New York
+# 3625470 Salem Central School District, New York
+# 3625770 Saratoga Springs City School District, New York
+# 3626160 Schuylerville Central School District, New York
+csds <- c("3603210", "3606210", "3612900", "3625470", "3625770", "3626160")
+
+# zip code tablulations
+df <- get_acs(geography="zcta",
+          state="NY",
+          zcta=c(12816, 12834),
+          variables="B01002_001",
+          year=year)
+
+
 vacs2009 <- load_variables(2009, "acs5", cache = TRUE)
 vacs2014 <- load_variables(2014, "acs5", cache = TRUE)
+vacs2018 <- load_variables(2018, "acs5", cache = TRUE)
 vacs2019 <- load_variables(2019, "acs5", cache = TRUE)
 vacs <- 
   bind_rows(vacs2009 %>% mutate(endyear=2009),
             vacs2014 %>% mutate(endyear=2014),
+            vacs2018 %>% mutate(endyear=2018),
             vacs2019 %>% mutate(endyear=2019))
+
+tmp <- count(vacs, concept)
+tmp %>% filter(str_detect(concept, coll("veteran", ignore_case = TRUE)))
+djb1 <- tmp %>% filter(str_detect(concept, coll("percent", ignore_case = TRUE)), year %in% 2018:2019)
+
+# possible concepts of interest
+# AGE BY DISABILITY STATUS BY HEALTH INSURANCE COVERAGE STATUS
+# AGE BY IMPUTATION OF INDEPENDENT LIVING DIFFICULTY FOR THE CIVILIAN NONINSTITUTIONALIZED POPULATION 15 YEARS AND OVER
+# AGE BY NUMBER OF DISABILITIES
+# AGE BY PRESENCE OF A COMPUTER AND TYPES OF INTERNET SUBSCRIPTION IN HOUSEHOLD
+# AGE BY VETERAN STATUS BY EMPLOYMENT STATUS FOR THE CIVILIAN POPULATION 18 TO 64 YEARS
+# AGE OF HOUSEHOLDER BY GROSS RENT AS A PERCENTAGE OF HOUSEHOLD INCOME IN THE PAST 12 MONTHS
+
+s <- "AGE OF HOUSEHOLDER BY GROSS RENT AS A PERCENTAGE"
+s <- "GROSS RENT AS A PERCENTAGE"
+s <- "PERCENTAGE OF HOUSEHOLD INCOME"
+
+pvars <- vacs %>% filter(str_detect(concept, coll(s, ignore_case = TRUE)))
+pvars2 <- pvars %>% filter(str_detect(concept, coll("owner cost", ignore_case = TRUE)),
+                 label=="Estimate!!Total")
+pvars3 <- pvars %>% filter(label=="Estimate!!Total")
+# B25071_001 Estimate!!Median gross rent as a percentage of household income MEDIAN GROSS RENT AS A PERCENTAGE OF HOUSEHOLD INCOME IN THE PAST 12 MONTHS
 
 vacs <- vacs %>%
   group_by(name) %>%
@@ -151,7 +259,10 @@ count(sba, agegroup)
 count(vacs, nfiles)
 
 acsvars <- c("B01001_001")
+acsvars <- c("B25071_001")
 # B01002_001 median age total
+# B25093_001 AGE OF HOUSEHOLDER BY SELECTED MONTHLY OWNER COSTS AS A PERCENTAGE OF HOUSEHOLD INCOME IN THE PAST 12 MONTHS
+# B25101_001 Estimate!!Total MORTGAGE STATUS BY MONTHLY HOUSING COSTS AS A PERCENTAGE
 
 # median age by state in 2010
 age10 <- get_decennial(geography = "state", 
@@ -164,13 +275,14 @@ f <- function(year){
   get_acs(geography="county subdivision",
                    state="NY",
                    county="Washington",
-                   variables="B01002_001",
+                   variables="B25101_001",
                    year=year) %>%
     setNames(str_to_lower(names(.))) %>%
     mutate(year=!!year)
 }
 
 acsdata <- map_dfr(c(2009, 2014, 2019), f)
+acsdata <- map_dfr(c(2014, 2019), f)
 count(acsdata, year)
 
 acsdata %>%
@@ -238,7 +350,197 @@ tpop <- get_estimates(
   county="Washington",
   time_series = TRUE)
 
+
+# "county subdivision" -- state, county
+# school district (unified) -- state
+
+year <- 2019
+df <- get_acs(geography="school district (unified)",
+              state="NY",
+              # county="Washington",
+              variables="B01002_001", # Estimate!!Median age!!Total
+              year=year) %>%
+    setNames(str_to_lower(names(.))) %>%
+    mutate(year=!!year)
+
+df2 <- df %>%
+  filter(geoid %in% csds)
+df2
+
+argcsd <- "3603210"
+cambcsd <- "3606210"
+gwcsd <- "3612900"
+salemcsd <- "3625470"
+saracsd <- "3625770"
+schuycsd <- "3626160"
+csds_codes <- c(argcsd, cambcsd, gwcsd, salemcsd, saracsd, schuycsd)
+
+
 ```
+
+
+```{r tidy_census_full}
+# define variables of interest
+
+# build a full variable list and clean it up so that it has uniform titles
+vacs2009 <- load_variables(2009, "acs5", cache = TRUE)
+vacs2014 <- load_variables(2014, "acs5", cache = TRUE)
+vacs2018 <- load_variables(2018, "acs5", cache = TRUE)
+vacs2019 <- load_variables(2019, "acs5", cache = TRUE)
+vacs <- 
+  bind_rows(vacs2009 %>% mutate(endyear=2009),
+            vacs2014 %>% mutate(endyear=2014),
+            vacs2018 %>% mutate(endyear=2018),
+            vacs2019 %>% mutate(endyear=2019))
+
+# create uniform labels based on latest year and count # years
+uvacs <- vacs %>%
+  separate(name, c("tableid", "vnum"), remove=FALSE) %>%
+  group_by(name) %>%
+  arrange(endyear) %>%
+  mutate(nyears=n(), ulabel=label[endyear==max(endyear)]) %>%
+  ungroup %>%
+  # there are never more than 8 parts to the uniform lable
+  separate(ulabel, into=paste0("ulab", 1:8), sep="!!", remove=FALSE)
+
+```
+
+
+```{r tidy_census_safe_functions}
+# functions to safely get data (without erroring if it doesn't exist)
+
+get_acsvars <- function(acsvars, years, dict=uvacs){
+  # geotypes <- tribble(~type, ~name,
+  #                     "state", "state",
+  #                     "county", "county",
+  #                     "cosub", "county subdivision",
+  #                     "place", "place",
+  #                     "school", "school district (unified)",
+  #                     "zcta", "zcta"
+  #                     )
+  
+  get_geo <- function(geotype, year, subvars){
+    print(geotype)
+    if(geotype=="state"){
+      df <- get_acs(geography="state",
+                    state="NY",
+                    variables=subvars,
+                    year=year)
+      } else if(geotype=="county") {
+        df <- get_acs(geography="county",
+              state="NY",
+              county=c("Albany", "Saratoga", "Warren", "Washington"),
+              variables=subvars,
+              year=year)
+        } else df <- tibble(GEO=NA_character_,
+                            NAME=NA_character_,
+                            variable=NA_character_,
+                            estimate=NA_real_,
+                            moe=NA_real_)
+        df <- df %>%
+          setNames(str_to_lower(names(.))) %>%
+          mutate(geotype=!!geotype,
+                 year=!!year) %>%
+          select(geotype, year, geoid, name, variable, estimate, moe)
+        return(df)
+        }
+  
+  get_year <- function(year, acsvars, dict){
+    print(year)
+    subvars <- intersect(acsvars, dict$name[dict$endyear==year])
+    geotypes <- c("state", "county")
+    map_dfr(geotypes, get_geo, year, subvars)
+  }
+  
+  map_dfr(years, get_year, acsvars, dict)
+  
+}
+
+df <- get_acsvars(acsvars="B01002_001", years=c(2009, 2014, 2019))
+df
+
+# state
+df <- get_acs(geography="state",
+                   state="NY",
+                   variables="B01002_001",
+                   year=year)
+
+# county
+df <- get_acs(geography="county",
+              state="NY",
+              county=c("Albany", "Saratoga", "Warren", "Washington"),
+              variables="B01002_001",
+              year=year)
+
+df <- get_acs(geography="county subdivision",
+                   state="NY",
+                   county="Washington",
+                   variables="B01002_001",
+                   year=year)
+
+
+# county subdivisions
+df <- get_acs(geography="county subdivision",
+                   state="NY",
+                   county="Washington",
+                   variables="B01002_001",
+                   year=year) 
+# 3611502561 Argyle town, Washington County, New York
+# 3611511836 Cambridge town, Washington County, New York
+# 3611522656 Easton town, Washington County, New York
+# 3611530686 Greenwich town, Washington County, New York
+# 3611538143 Jackson town, Washington County, New York
+# 3611564782 Salem town, Washington County, New York
+# 3611581578 White Creek town, Washington County, New York
+
+
+
+# places
+df <- get_acs(geography="place",
+                   state="NY",
+                   # county="Washington",
+                   variables="B01002_001",
+                   year=year)
+# 3602550 Argyle village, New York
+# 3611825 Cambridge village, New York
+# 3630675 Greenwich village, New York
+# 3664771 Salem CDP, New York
+# 3665255 Saratoga Springs city, New York
+# 3665750 Schuylerville village, New York
+places <- c("3602550", "3611825", "3630675", "3664771", "3665255", "3665750")
+
+
+# school districts
+df <- get_acs(geography="school district (unified)",
+              state="NY",
+              # county="Washington",
+              variables="B01002_001", # Estimate!!Median age!!Total
+              year=year)
+# 3603210 Argyle Central School District, New York
+# 3606210 Cambridge Central School District, New York
+# 3612900 Greenwich Central School District, New York
+# 3625470 Salem Central School District, New York
+# 3625770 Saratoga Springs City School District, New York
+# 3626160 Schuylerville Central School District, New York
+csds <- c("3603210", "3606210", "3612900", "3625470", "3625770", "3626160")
+
+# zip code tablulations
+df <- get_acs(geography="zcta",
+          state="NY",
+          zcta=c(12816, 12834),
+          variables="B01002_001",
+          year=year)
+
+
+```
+
+
+```{r get_acs_all}
+
+```
+
+
+
 
 
 ```{r census_reporter}

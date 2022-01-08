@@ -1,3 +1,17 @@
+# directories to ignore
+documents/
+data/
+
+# filetypes to ignore
+*.csv
+*.htm*
+*.pdf
+*.rar
+*.xls*
+*.zip
+
+# below here are default ignores
+
 # History files
 .Rhistory
 .Rapp.history
@@ -38,12 +52,4 @@ vignettes/*.pdf
 # R Environment Variables
 .Renviron
 
-# directories to ignore
-documents/
-data/
 
-# filetypes to ignore
-*.csv
-*.htm*
-*.pdf
-*.xls*
