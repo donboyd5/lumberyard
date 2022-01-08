@@ -147,6 +147,11 @@ df <- get_acs(geography="county subdivision",
                    county="Washington",
                    variables="B01002_001",
                    year=year) 
+df <- get_acs(geography="county subdivision",
+                   state="36",
+                   county="115",
+                   variables="B01002_001",
+                   year=year) 
 # 3611502561 Argyle town, Washington County, New York
 # 3611511836 Cambridge town, Washington County, New York
 # 3611522656 Easton town, Washington County, New York
@@ -406,58 +411,221 @@ uvacs <- vacs %>%
 ```
 
 
+```{r tidy_census_define_vars}
+sexage1 <- uvacs %>%
+  filter(tableid=="B01001", endyear==2019)
+sexage <- sexage1 %>%
+  select(tableid, concept, name, nyears, ulabel, sex=ulab3, agegroup=ulab4) %>%
+  mutate(sex=str_remove_all(sex, ":") %>% str_to_lower(),
+         agegroup=ifelse(is.na(agegroup), "total", agegroup)) %>%
+  filter(sex %in% c("male", "female"))
+
+geos <- read_delim(
+"geotype;geoid;geoname
+
+state; 36; New York
+
+county; 36001; Albany County, New York
+county; 36091; Saratoga County, New York
+county; 36113; Warren County, New York
+county; 36115; Washington County, New York
+
+cosub; 36115; Washington County, New York
+
+place; 3602550; Argyle village, New York
+place; 3611825; Cambridge village, New York
+place; 3630675; Greenwich village, New York
+place; 3664771; Salem village, New York
+place; 3665750; Schuylerville village, New York
+
+school; 3603210; Argyle Central School District, New York
+school; 3606210; Cambridge Central School District, New York
+school; 3612900; Greenwich Central School District, New York
+school; 3625470; Salem Central School District, New York
+school; 3625770; Saratoga Springs City School District, New York
+school; 3626160; Schuylerville Central School District, New York
+
+", col_types=cols(.default = col_character()), trim_ws=TRUE
+)
+geos
+
+# df %>% select(geotype, geoid, name) %>% 
+#   distinct %>% 
+#   arrange(geotype, geoid) %>%
+#   write_delim(here::here("data", "test.out"), delim=";", quote="needed")
+
+
+```
+
+
+
 ```{r tidy_census_safe_functions}
 # functions to safely get data (without erroring if it doesn't exist)
 
-get_acsvars <- function(acsvars, years, dict=uvacs){
-  # geotypes <- tribble(~type, ~name,
-  #                     "state", "state",
-  #                     "county", "county",
-  #                     "cosub", "county subdivision",
-  #                     "place", "place",
-  #                     "school", "school district (unified)",
-  #                     "zcta", "zcta"
-  #                     )
+get_acsvars <- function(acsvars, years, dict=uvacs, geos=geos){
   
   get_geo <- function(geotype, year, subvars){
     print(geotype)
     if(geotype=="state"){
       df <- get_acs(geography="state",
-                    state="NY",
+                    state=states,
                     variables=subvars,
                     year=year)
       } else if(geotype=="county") {
+        # print(states); print(counties); print(subvars); print(year)
         df <- get_acs(geography="county",
-              state="NY",
-              county=c("Albany", "Saratoga", "Warren", "Washington"),
+              state=states,
+              county=counties,
               variables=subvars,
               year=year)
+       } else if(geotype=="cosub"){
+          df <- get_acs(geography="county subdivision",
+                        state=cosubs_state,
+                        county=cosubs_county,
+                        variables=subvars,
+                   year=year)
+        } else if(geotype=="place"){
+          df <- get_acs(geography="place",
+                   state=states,
+                   variables=subvars,
+                   year=year)
+        } else if(geotype=="school"){
+          df <- get_acs(geography="school district (unified)",
+                   state=states,
+                   variables=subvars,
+                   year=year)
         } else df <- tibble(GEO=NA_character_,
+                            GEOID=NA_character_,
                             NAME=NA_character_,
                             variable=NA_character_,
                             estimate=NA_real_,
                             moe=NA_real_)
+        
         df <- df %>%
           setNames(str_to_lower(names(.))) %>%
           mutate(geotype=!!geotype,
-                 year=!!year) %>%
-          select(geotype, year, geoid, name, variable, estimate, moe)
+                 year=!!year)  %>%
+          select(geotype, year, geoid, geoname=name, variable, estimate, moe)
+        
+        df <- df %>%
+          # drop non-cosub govts that are not specified in the geos file (revisit)
+          left_join(geos %>% 
+              select(geoid, geotype, geos_geoname=geoname) %>%
+              mutate(ingeo=TRUE),
+            by=c("geoid", "geotype")) %>%
+          # drop non-cosub govts that are not specified in the geos file (revisit)
+          filter((geotype=="cosub") | ingeo) %>%
+          select(-ingeo)
         return(df)
         }
   
-  get_year <- function(year, acsvars, dict){
+  get_year <- function(year, acsvars, geos, dict){
+    # the main program -- direct action for a single year
     print(year)
     subvars <- intersect(acsvars, dict$name[dict$endyear==year])
-    geotypes <- c("state", "county")
     map_dfr(geotypes, get_geo, year, subvars)
   }
   
-  map_dfr(years, get_year, acsvars, dict)
-  
+  # these variables are available throughout the function
+  geotypes <- unique(geos$geotype)
+  states <- geos %>% filter(geotype=="state") %>% .$geoid
+  counties <- geos %>% 
+    filter(geotype=="county") %>% 
+    mutate(counties=str_sub(geoid, 3, 5)) %>%
+    .$counties
+  places <- geos %>% filter(geotype=="place") %>% .$geoid
+  cosubs <- geos %>% filter(geotype=="cosub") %>% .$geoid
+  cosubs_state <- str_sub(cosubs, 1, 2)
+  cosubs_county <- ifelse(nchar(cosubs)==5, str_sub(cosubs, 3, 5), NULL)
+  # print(cosubs_county)
+  df <- map_dfr(years, get_year, acsvars, geos, dict)
+  df
 }
 
-df <- get_acsvars(acsvars="B01002_001", years=c(2009, 2014, 2019))
-df
+acsvars <- c("B01002_001", sexage$name)
+
+df1 <- get_acsvars(acsvars=acsvars,
+                  years=c(2009, 2014, 2019),
+                  dict=uvacs, 
+                  geos=geos)
+df1
+count(df1 %>% filter(geotype=="school"), geotype, geoid, geoname)
+count(df1 %>% filter(geotype=="state"), geotype, geoid, geoname)
+count(df1, geotype)
+count(df1, geotype, geoid, geoname)
+# 25 place   3664771    Salem CDP, New York                                49
+# 26 place   3664771    Salem village, New York                            98
+
+df2 %>% 
+  filter(geoid=="3602550") %>%
+  group_by(geoid, geotype, year, geoname) %>%
+  summarise(n=n())
+
+df1 %>% 
+  filter(str_detect(geoname, "Argyle")) %>%
+  group_by(geotype, geoid, year, geoname) %>%
+  summarise(n=n())
+
+
+count(df1, geotype)
+count(df1 %>% filter(geotype=="school"), geotype, geoid, geoname)
+
+geos %>%
+  filter(geotype=="school")
+
+
+df <- get_acs(geography="school district (unified)",
+              state="NY",
+              variables="B01002_001", # Estimate!!Median age!!Total
+              year=year) %>%
+  filter()
+
+
+
+  # these variables are available throughout the function
+  geotypes <- unique(geos$geotype)
+  states <- geos %>% filter(geotype=="state") %>% .$geoid
+  counties <- geos %>% 
+    filter(geotype=="county") %>% 
+    mutate(counties=str_sub(geoid, 3, 5)) %>%
+    .$counties
+  places <- geos %>% filter(geotype=="place") %>% .$geoid
+  cosubs <- geos %>% filter(geotype=="cosub") %>% .$geoid
+  cosubs_state <- str_sub(cosubs, 1, 2)
+  cosubs_county <- ifelse(nchar(cosubs)==5, str_sub(cosubs, 3, 5), NULL)
+  # print(cosubs_county)
+  dict <- uvacs
+  year <- 2009
+  subvars <- intersect(acsvars, dict$name[dict$endyear==year])
+  
+  df <- get_acs(geography="county",
+      state=states,
+      county=counties,
+      variables=subvars,
+      year=year, show_call = TRUE)
+  
+  df <- get_acs(geography="county subdivision",
+                   state="NY",
+                   county="Washington",
+                   variables="B01002_001",
+                   year=year, show_call = TRUE)
+
+
+  df <- get_acs(geography="county",
+              state="NY",
+              county=c("115"),
+              variables="B01002_001",
+              year=year, show_call = TRUE)
+  
+  # geotypes <- tribble(~type, ~name,
+#                     "state", "state",
+#                     "county", "county",
+#                     "cosub", "county subdivision",
+#                     "place", "place",
+#                     "school", "school district (unified)",
+#                     "zcta", "zcta"
+#                     )
+  
 
 # state
 df <- get_acs(geography="state",
@@ -471,6 +639,8 @@ df <- get_acs(geography="county",
               county=c("Albany", "Saratoga", "Warren", "Washington"),
               variables="B01002_001",
               year=year)
+
+
 
 df <- get_acs(geography="county subdivision",
                    state="NY",
@@ -513,7 +683,7 @@ places <- c("3602550", "3611825", "3630675", "3664771", "3665255", "3665750")
 # school districts
 df <- get_acs(geography="school district (unified)",
               state="NY",
-              # county="Washington",
+              #  county="Washington",
               variables="B01002_001", # Estimate!!Median age!!Total
               year=year)
 # 3603210 Argyle Central School District, New York
