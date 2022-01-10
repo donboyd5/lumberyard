@@ -5,6 +5,7 @@ data/
 # filetypes to ignore
 *.csv
 *.htm*
+*.out
 *.pdf
 *.rar
 *.xls*

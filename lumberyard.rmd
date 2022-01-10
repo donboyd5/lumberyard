@@ -13,7 +13,6 @@ editor_options:
   chunk_output_type: console
 ---
 
-
 # SETUP SECTION
 
 ```{r setup, eval=TRUE, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
@@ -31,6 +30,7 @@ tprint <- 50  # default tibble print
 options(tibble.print_max = tprint, tibble.print_min = tprint) # show up to tprint rows
 
 # tools
+library(vroom)
 library(readxl)
 library(lubridate)
 library(RColorBrewer)
@@ -69,6 +69,29 @@ library(usmap)
 
 ```
 
+
+```{r functions_utility}
+str_detect_any <- function(s, elements){
+  # check whether each item in the string vector s
+  # has at least one item in the string vector elements
+  
+  # get a list: one "row" per item in s
+  #   each row is a logical vector with same length as elements
+  logical_list <- purrr::map(s, stringr::str_detect, elements)
+  
+  # are any of the items in each "row" of the list true?
+  purrr::map_lgl(logical_list, any)
+  
+  # test with the following code:
+    # s <- c("str one", "str two", "str 3", "str 4", "my 8")
+    # elements <- c("one", "3", "str", "7")
+    # 
+    # str_detect_any(s, elements)
+  }
+
+```
+
+
 ```{r constants}
 #.. api keys ----
 source("~/R_projects/api_keys.r", verbose=TRUE)
@@ -89,20 +112,23 @@ acs_source <- "American Community Survey"
 
 ```
 
-
 # GOALS
 
 The goal is to understand the current local housing situation and help inform decisions about what kind of housing might be appropriate to consider within the Lumber Yard.
 
-I think the big questions are:
-•	What does the census and other publicly available records tell us about the population and housing within Village of Cambridge (and perhaps the CCS school district catchment area of White Creek, Cambridge and Jackson and how they compare to prior censuses to see what the trends are?.  
-•	What is the current status of housing in Village of Cambridge?  
-•	What is needed or might be the right mix of housing options in the Village of Cambridge, generally to ensure a vibrant, dynamic, diverse, multi-generational caring rural community?  
-•	Are there case studies/lessons learned from other ‘ housing developments’ that attract younger people (25-35 year olds) and entrepreneurs and remote workers to rural communities?
-
+I think the big questions are: • What does the census and other publicly available records tell us about the population and housing within Village of Cambridge (and perhaps the CCS school district catchment area of White Creek, Cambridge and Jackson and how they compare to prior censuses to see what the trends are?.\
+• What is the current status of housing in Village of Cambridge?\
+• What is needed or might be the right mix of housing options in the Village of Cambridge, generally to ensure a vibrant, dynamic, diverse, multi-generational caring rural community?\
+• Are there case studies/lessons learned from other ' housing developments' that attract younger people (25-35 year olds) and entrepreneurs and remote workers to rural communities?
 
 # DATA PREPARATION SECTION
-```{r tidy_census}
+
+```{r acs_downloads}
+# https://www.census.gov/programs-surveys/acs/data/summary-file.2019.html
+
+```
+
+```{r tidy_census_notes}
 # https://walker-data.com/tidycensus/articles/basic-usage.html 
 # load_variables() takes two required arguments: year of Census or endyear of ACS sample, and dataset name
 # For decennial Census, possible dataset choices include "pl" for the redistricting files (currently the only choice for 2020), "sf1" or "sf2" (2000 and 2010) and "sf3" or "sf4" (2000 only)
@@ -119,97 +145,11 @@ I think the big questions are:
 
 # keep_geo_vars=TRUE doesn't seem to matter for what I'm doing
 
-year <- 2019
+#..regex ----
+# str_extract(ulabel, '![^!]+$'),  # everything after last !
+#  "^[^,]+"  # everything before first ,
+# x <- c("abc, def", "hijklm ,zyz")  str_extract(x, "^[^,]+")
 
-# state
-df <- get_acs(geography="state",
-                   state="NY",
-                   variables="B01002_001",
-                   year=year)
-
-# county
-df <- get_acs(geography="county",
-              state="NY",
-              county=c("Albany", "Saratoga", "Warren", "Washington"),
-              variables="B01002_001",
-              year=year)
-
-df <- get_acs(geography="county subdivision",
-                   state="NY",
-                   county="Washington",
-                   variables="B01002_001",
-                   year=year)
-
-
-# county subdivisions
-df <- get_acs(geography="county subdivision",
-                   state="NY",
-                   county="Washington",
-                   variables="B01002_001",
-                   year=year) 
-df <- get_acs(geography="county subdivision",
-                   state="36",
-                   county="115",
-                   variables="B01002_001",
-                   year=year) 
-# 3611502561 Argyle town, Washington County, New York
-# 3611511836 Cambridge town, Washington County, New York
-# 3611522656 Easton town, Washington County, New York
-# 3611530686 Greenwich town, Washington County, New York
-# 3611538143 Jackson town, Washington County, New York
-# 3611564782 Salem town, Washington County, New York
-# 3611581578 White Creek town, Washington County, New York
-
-
-
-# places
-df <- get_acs(geography="place",
-                   state="NY",
-                   # county="Washington",
-                   variables="B01002_001",
-                   year=year)
-# 3602550 Argyle village, New York
-# 3611825 Cambridge village, New York
-# 3630675 Greenwich village, New York
-# 3664771 Salem CDP, New York
-# 3665255 Saratoga Springs city, New York
-# 3665750 Schuylerville village, New York
-places <- c("3602550", "3611825", "3630675", "3664771", "3665255", "3665750")
-
-
-# school districts
-df <- get_acs(geography="school district (unified)",
-              state="NY",
-              # county="Washington",
-              variables="B01002_001", # Estimate!!Median age!!Total
-              year=year)
-# 3603210 Argyle Central School District, New York
-# 3606210 Cambridge Central School District, New York
-# 3612900 Greenwich Central School District, New York
-# 3625470 Salem Central School District, New York
-# 3625770 Saratoga Springs City School District, New York
-# 3626160 Schuylerville Central School District, New York
-csds <- c("3603210", "3606210", "3612900", "3625470", "3625770", "3626160")
-
-# zip code tablulations
-df <- get_acs(geography="zcta",
-          state="NY",
-          zcta=c(12816, 12834),
-          variables="B01002_001",
-          year=year)
-
-
-vacs2009 <- load_variables(2009, "acs5", cache = TRUE)
-vacs2014 <- load_variables(2014, "acs5", cache = TRUE)
-vacs2018 <- load_variables(2018, "acs5", cache = TRUE)
-vacs2019 <- load_variables(2019, "acs5", cache = TRUE)
-vacs <- 
-  bind_rows(vacs2009 %>% mutate(endyear=2009),
-            vacs2014 %>% mutate(endyear=2014),
-            vacs2018 %>% mutate(endyear=2018),
-            vacs2019 %>% mutate(endyear=2019))
-
-tmp <- count(vacs, concept)
 tmp %>% filter(str_detect(concept, coll("veteran", ignore_case = TRUE)))
 djb1 <- tmp %>% filter(str_detect(concept, coll("percent", ignore_case = TRUE)), year %in% 2018:2019)
 
@@ -225,7 +165,8 @@ s <- "AGE OF HOUSEHOLDER BY GROSS RENT AS A PERCENTAGE"
 s <- "GROSS RENT AS A PERCENTAGE"
 s <- "PERCENTAGE OF HOUSEHOLD INCOME"
 
-pvars <- vacs %>% filter(str_detect(concept, coll(s, ignore_case = TRUE)))
+pvars <- uvacs %>% filter(str_detect(concept, coll(s, ignore_case = TRUE)))
+count(pvars, concept)
 pvars2 <- pvars %>% filter(str_detect(concept, coll("owner cost", ignore_case = TRUE)),
                  label=="Estimate!!Total")
 pvars3 <- pvars %>% filter(label=="Estimate!!Total")
@@ -251,20 +192,14 @@ sba <- vacs3 %>%
     str_detect(ulabel, "Male") ~ "male",
     str_detect(ulabel, "Female") ~ "female", 
     TRUE ~ "total"),
-    agegroup=str_extract(ulabel, '![^!]+$'),
+    agegroup=str_extract(ulabel, '![^!]+$'),  # everything after last !
     agegroup=case_when(str_detect(agegroup, "Male") ~ "all",
                        str_detect(agegroup, "Female") ~ "all",
                        str_detect(agegroup, "Total") ~ "all",
                        TRUE ~ str_sub(agegroup, 2, -1)))
 
 count(sba, name, ulabel)
-count(sba, sex)
-count(sba, agegroup)
 
-count(vacs, nfiles)
-
-acsvars <- c("B01001_001")
-acsvars <- c("B25071_001")
 # B01002_001 median age total
 # B25093_001 AGE OF HOUSEHOLDER BY SELECTED MONTHLY OWNER COSTS AS A PERCENTAGE OF HOUSEHOLD INCOME IN THE PAST 12 MONTHS
 # B25101_001 Estimate!!Total MORTGAGE STATUS BY MONTHLY HOUSING COSTS AS A PERCENTAGE
@@ -273,69 +208,6 @@ acsvars <- c("B25071_001")
 age10 <- get_decennial(geography = "state", 
                        variables = "P013001", 
                        year = 2010)
-
-
-f <- function(year){
-  print(year)
-  get_acs(geography="county subdivision",
-                   state="NY",
-                   county="Washington",
-                   variables="B25101_001",
-                   year=year) %>%
-    setNames(str_to_lower(names(.))) %>%
-    mutate(year=!!year)
-}
-
-acsdata <- map_dfr(c(2009, 2014, 2019), f)
-acsdata <- map_dfr(c(2014, 2019), f)
-count(acsdata, year)
-
-acsdata %>%
-  filter(str_detect(name, "Cambridge") |
-           str_detect(name, "Greenwich") |
-           str_detect(name, "Argyle") |
-           str_detect(name, "Salem")) %>%
-  ggplot(aes(year, estimate, colour=str_sub(name, 1, 10))) +
-  geom_line() +
-  scale_x_continuous(breaks=c(2009, 2014, 2019))
-
-acsdata %>%
-  filter(str_detect(name, "Cambridge") |
-           str_detect(name, "Greenwich") |
-           str_detect(name, "Argyle") |
-           str_detect(name, "Salem")) %>%
-  arrange(geoid, year)
-
-
-zf <- function(year){
-  print(year)
-  get_acs(geography="zcta",
-          state="NY",
-          # county="Washington",
-          zcta=c(12816, 12834),
-          variables="B01002_001",
-          year=year) %>%
-    setNames(str_to_lower(names(.))) %>%
-    mutate(year=!!year)
-}
-
-zacs <- map_dfr(c(2009, 2014, 2019), zf)
-count(acsdata, year)
-
-zacs <- map_dfr(c(2014, 2019), zf)
-zacs <- zacs %>%
-  arrange(geoid, year)
-
-zacs %>%
-  filter(str_detect(name, "Cambridge") |
-           str_detect(name, "Greenwich") |
-           str_detect(name, "Argyle") |
-           str_detect(name, "Salem")) %>%
-  ggplot(aes(year, estimate, colour=str_sub(name, 1, 10))) +
-  geom_line() +
-  scale_x_continuous(breaks=c(2009, 2014, 2019))
-
-
 
 get_estimates(
   geography="county",
@@ -356,35 +228,198 @@ tpop <- get_estimates(
   time_series = TRUE)
 
 
-# "county subdivision" -- state, county
-# school district (unified) -- state
+```
 
-year <- 2019
-df <- get_acs(geography="school district (unified)",
-              state="NY",
-              # county="Washington",
-              variables="B01002_001", # Estimate!!Median age!!Total
-              year=year) %>%
-    setNames(str_to_lower(names(.))) %>%
-    mutate(year=!!year)
+```{r tidycensus_functions}
+# functions to safely get data (without erroring if it doesn't exist)
 
-df2 <- df %>%
-  filter(geoid %in% csds)
-df2
+# get_acsvars <- function(acsvars, years, dict=uvacs, geos=geos){
+#   
+#   get_geo <- function(geotype, year, subvars){
+#     print(geotype)
+#     if(geotype=="state"){
+#       df <- get_acs(geography="state",
+#                     state=states,
+#                     variables=subvars,
+#                     year=year)
+#       } else if(geotype=="county") {
+#         df <- get_acs(geography="county",
+#               state=states,
+#               county=counties,
+#               variables=subvars,
+#               year=year)
+#        } else if(geotype=="cosub"){
+#           df <- get_acs(geography="county subdivision",
+#                         state=cosubs_state,
+#                         county=cosubs_county,
+#                         variables=subvars,
+#                    year=year)
+#         } else if(geotype=="place"){
+#           df <- get_acs(geography="place",
+#                    state=states,
+#                    variables=subvars,
+#                    year=year)
+#         } else if(geotype=="school"){
+#           df <- get_acs(geography="school district (unified)",
+#                    state=states,
+#                    variables=subvars,
+#                    year=year)
+#         } else if (geotype=="zcta" & year > 2009) {
+#           df <- get_acs(geography="zcta",
+#                         state="NY",
+#                         zcta=zctas,
+#                         variables=subvars,
+#                         year=year)
+#           
+#         } else df <- tibble(GEO=NA_character_,
+#                             GEOID=NA_character_,
+#                             NAME=NA_character_,
+#                             variable=NA_character_,
+#                             estimate=NA_real_,
+#                             moe=NA_real_)
+#         
+#         df <- df %>%
+#           setNames(str_to_lower(names(.))) %>%
+#           mutate(geotype=!!geotype,
+#                  year=!!year)  %>%
+#           select(geotype, year, geoid, geoname=name, variable, estimate, moe)
+#         
+#         df <- df %>%
+#           # drop non-cosub govts that are not specified in the geos file (revisit)
+#           left_join(geos %>% 
+#               select(geoid, geotype, geos_geoname=geoname) %>%
+#               mutate(ingeo=TRUE),
+#             by=c("geoid", "geotype")) %>%
+#           filter((geotype=="cosub") | ingeo) %>%
+#           select(-ingeo)
+#         return(df)
+#         }
+#   
+#   get_year <- function(year, acsvars, geos, dict){
+#     # the main program -- direct action for a single year
+#     print(year)
+#     subvars <- intersect(acsvars, dict$name[dict$endyear==year])
+#     map_dfr(geotypes, get_geo, year, subvars)
+#   }
+#   
+#   # these variables are available throughout the function
+#   geotypes <- unique(geos$geotype)
+#   states <- geos %>% filter(geotype=="state") %>% .$geoid
+#   counties <- geos %>% 
+#     filter(geotype=="county") %>% 
+#     mutate(counties=str_sub(geoid, 3, 5)) %>%
+#     .$counties
+#   places <- geos %>% filter(geotype=="place") %>% .$geoid
+#   cosubs <- geos %>% filter(geotype=="cosub") %>% .$geoid
+#   cosubs_state <- str_sub(cosubs, 1, 2)
+#   cosubs_county <- ifelse(nchar(cosubs)==5, str_sub(cosubs, 3, 5), NULL)
+#   zctas <- geos %>% filter(geotype=="zcta") %>% .$geoid
+#   # print(cosubs_county)
+#   df <- map_dfr(years, get_year, acsvars, geos, dict)
+#   df
+# }
 
-argcsd <- "3603210"
-cambcsd <- "3606210"
-gwcsd <- "3612900"
-salemcsd <- "3625470"
-saracsd <- "3625770"
-schuycsd <- "3626160"
-csds_codes <- c(argcsd, cambcsd, gwcsd, salemcsd, saracsd, schuycsd)
+get_acstab <- function(acstab, years, dict=uvacs, geos=geos){
+  
+  get_geo <- function(geotype, year, acstab){
+    print(geotype)
+    if(geotype=="state"){
+      df <- get_acs(geography="state",
+                    state=states,
+                    table=acstab,
+                    year=year)
+      } else if(geotype=="county") {
+        df <- get_acs(geography="county",
+                      state=states,
+                      county=counties,
+                      table=acstab,
+                      year=year)
+       } else if(geotype=="cosub"){
+          df <- get_acs(geography="county subdivision",
+                        state=cosubs_state,
+                        county=cosubs_county,
+                        table=acstab,
+                   year=year)
+        } else if(geotype=="place"){
+          df <- get_acs(geography="place",
+                   state=states,
+                   table=acstab,
+                   year=year)
+        } else if(geotype=="school"){
+          df <- get_acs(geography="school district (unified)",
+                   state=states,
+                   table=acstab,
+                   year=year)
+        } else if (geotype=="zcta" & year > 2009) {
+          df <- get_acs(geography="zcta",
+                        state="NY",
+                        zcta=zctas,
+                        table=acstab,
+                        year=year)
+          
+        } else {
+          df <- tibble(GEOID=NA_character_,
+                       NAME=NA_character_,
+                       variable=NA_character_,
+                       estimate=NA_real_,
+                       moe=NA_real_)
+        }
+        
+        df <- df %>%
+          setNames(str_to_lower(names(.))) %>%
+          mutate(geotype=!!geotype,
+                 year=!!year)  %>%
+          select(geotype, year, geoid, geoname=name, variable, estimate, moe)
+        
+        df <- df %>%
+          # drop non-cosub govts that are not specified in the geos file (revisit)
+          left_join(geos %>% 
+              select(geoid, geotype, geos_geoname=geoname) %>%
+              mutate(ingeo=TRUE),
+            by=c("geoid", "geotype")) %>%
+          filter((geotype=="cosub") | ingeo) %>%
+          select(-ingeo)
+        return(df)
+        }
+  
+  get_year <- function(year, acstab, geos){
+    # the main program -- direct action for a single year
+    print(year)
+    if(acstab %in% tabs_avail$tableid[tabs_avail$year==year]) {
+      map_dfr(geotypes, get_geo, year, acstab)
+    } else {
+      tibble(geo=NULL,
+                  geoid=NULL,
+                  name=NULL,
+                  variable=NULL,
+                  estimate=NULL,
+                  moe=NULL)
+    }
+  }
+  
+  # these variables are available throughout the function
+  geotypes <- unique(geos$geotype)
+  states <- geos %>% filter(geotype=="state") %>% .$geoid
+  counties <- geos %>% 
+    filter(geotype=="county") %>% 
+    mutate(counties=str_sub(geoid, 3, 5)) %>%
+    .$counties
+  places <- geos %>% filter(geotype=="place") %>% .$geoid
+  cosubs <- geos %>% filter(geotype=="cosub") %>% .$geoid
+  cosubs_state <- str_sub(cosubs, 1, 2)
+  cosubs_county <- ifelse(nchar(cosubs)==5, str_sub(cosubs, 3, 5), NULL)
+  zctas <- geos %>% filter(geotype=="zcta") %>% .$geoid
+  
+  tabs_avail <- count(dict, tableid, year=endyear)
+  df <- map_dfr(years, get_year, acstab, geos)
+  df
+}
 
+# tmp <- get_acstab(acstab="B25071", years=c(2009, 2014, 2019), dict=uvacs, geos=geos)
 
 ```
 
-
-```{r tidy_census_full}
+```{r tidy_census_varinfo}
 # define variables of interest
 
 # build a full variable list and clean it up so that it has uniform titles
@@ -403,12 +438,179 @@ uvacs <- vacs %>%
   separate(name, c("tableid", "vnum"), remove=FALSE) %>%
   group_by(name) %>%
   arrange(endyear) %>%
-  mutate(nyears=n(), ulabel=label[endyear==max(endyear)]) %>%
+  mutate(nyears=n(), ulabel=label[endyear==max(endyear)], maxyear=max(endyear)) %>%
   ungroup %>%
   # there are never more than 8 parts to the uniform lable
   separate(ulabel, into=paste0("ulab", 1:8), sep="!!", remove=FALSE)
 
 ```
+
+```{r tidy_census_explore_vars}
+# online checks:
+# https://data.census.gov/cedsci/table
+
+s <- "AGE OF HOUSEHOLDER BY GROSS RENT AS A PERCENTAGE"
+s <- "GROSS RENT AS A PERCENTAGE"
+s <- "PERCENTAGE OF HOUSEHOLD INCOME"
+
+pvars <- uvacs %>% filter(str_detect(concept, coll(s, ignore_case = TRUE)))
+count(pvars, concept)
+
+pvars2 <- pvars %>% filter(label=="Estimate!!Total")
+# B25071_001 Estimate!!Median gross rent as a percentage of household income MEDIAN GROSS RENT AS A PERCENTAGE OF HOUSEHOLD INCOME IN THE PAST 12 MONTHS
+
+var <- "B25072_001"
+uvacs %>% filter(name==var) %>% select(name, label, concept, endyear)
+
+df <- get_acs(geography="county",
+            state="NY",
+            county=c("115"),
+            variables=var,
+            year=2019)
+df
+
+df <- get_acs(geography="county",
+            state="NY",
+            # county=c("115"),
+            table="B25071",
+            year=2019)
+
+df <- get_acs(geography="place",
+            state="NY",
+            # county=c("115"),
+            table="B25071",
+            year=2019)
+
+
+
+# we want all of tables:
+# B25072  AGE OF HOUSEHOLDER BY GROSS RENT AS A PERCENTAGE OF HOUSEHOLD INCOME IN THE PAST 12 MONTHS
+# -- result is number of renter households with various characteristics
+
+```
+
+```{r tidy_census_define_tabs}
+# https://data.census.gov/cedsci/table
+# ACS_2019_SF_5YR_Appendices.xlsx sheet Appendics A
+# ACS2019_Table_Shells.xlsx
+tabs <- count(uvacs, tableid, concept)
+
+s <- "educational attain"
+s <- "geographical mobility"
+s <- "percent of"
+s <- "rent"
+(look <- tabs %>% 
+  # filter(str_sub(tableid, 1, 1)=="B") %>%
+  filter(str_detect(concept, coll(s, ignore_case = TRUE))) %>% select(tableid, concept))
+
+# Universe if NOT Population 25 years and over in the United States
+# B07001    GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY AGE FOR CURRENT RESIDENCE IN THE UNITED STATES
+# Universe:  Population 1 year and over in the United States
+# B07009 GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY EDUCATIONAL ATTAINMENT FOR CURRENT RESIDENCE IN THE UNITED STATES
+# B07409   GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY EDUCATIONAL ATTAINMENT FOR RESIDENCE 1 YEAR AGO IN THE UNITED STATES
+# B15003   EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+# B25071  MEDIAN GROSS RENT AS A PERCENTAGE OF HOUSEHOLD INCOME IN THE PAST 12 MONTHS (DOLLARS)
+# Universe:  Renter-occupied housing units paying cash rent
+
+save_table <- function(tab){
+  # print(tab)
+  df <- get_acstab(acstab=tab, years=c(2009, 2014, 2019), dict=uvacs, geos=geos)
+  df <- df %>% mutate(tableid=tab)
+  fn <- paste0("tab_", tab, ".rds")
+  saveRDS(df, here::here("data", fn))
+  df
+}
+
+df <- save_table("B07001")
+df <- save_table("B07009")
+# df <- readRDS(here::here("data", "tab_B07009.rds"))
+df <- save_table("B07409")
+df <- save_table("B15003")
+df <- save_table("B25071")
+# B01001
+
+# tmp <- get_acstab(acstab="B25071", years=c(2009, 2014, 2019), dict=uvacs, geos=geos)
+
+# combine tables ----
+combine_tabs <- function(tabnames){
+  get_tab <- function(tabname){
+    fname <- paste0("tab_", tabname, ".rds")
+    df <- readRDS(here::here("data", fname))
+    df
+  }
+  # get all the tabs
+  df <- map_dfr(tabnames, get_tab)
+  # clean them up
+  df <- df %>%
+    filter(!is.na(variable)) %>%
+    select(-geos_geoname)%>%
+    left_join(uvacs %>% 
+                filter(endyear==maxyear) %>%
+                select(variable=name, vnum, concept, starts_with("ulab")),
+              by="variable") %>%
+    mutate(concept=str_to_sentence(concept),
+           across(ulab1:ulab8, ~ str_remove(.x, ":")),
+           sname=str_extract(geoname, "^[^,]+")) %>%
+    select(geotype, geoid, sname, variable, tableid, vnum, year, estimate, moe,
+           concept, ulab1:ulab8, ulabel, geoname) %>%
+    arrange(geotype, geoid, variable, year)
+}
+
+tabnames <- c("B07001", "B07009", "B07409", "B15003", "B25071")
+df <- combine_tabs(tabnames)
+glimpse(df)
+count(df, tableid)
+saveRDS(df, here::here("data", "acsdata.rds"))
+
+```
+
+```{r}
+acsdata <- readRDS(here::here("data", "acsdata.rds"))
+count(acsdata, tableid, concept)
+
+```
+
+
+```{r}
+excludes <- c("Argyle", "Fort", "Dresden", "Hampton", "Hebron", "Whitehall", "Putnam", "Granville", "Kingsb", "Hartf")
+
+g <- function(s){
+  h <- function(ex) str_detect(s, ex)
+  detected <- any(map_lgl(excludes, h))
+  map_lgl(geoname, g)
+}
+
+
+
+p <- B25071 %>%
+  filter(year==2019) %>%
+  mutate(bad=map_lgl(geoname, g)) %>%
+  filter(!bad) %>%
+  mutate(label=str_split(geoname, coll(","), simplify=TRUE)[,1],
+         label=case_when(geoid=="36" ~ "New York State",
+                         str_detect(label, "ZCTA") ~ str_replace(label, "ZCTA5", "Zip"),
+                         TRUE ~ label)) %>%
+  ggplot(aes(x=estimate, y=reorder(label, estimate))) +
+  # geom_point(colour="blue", size=0.75) +
+  geom_col(fill="blue", size=2.5, width=0.3) +
+  geom_errorbar(aes(xmin=estimate - moe, xmax=estimate + moe),
+                width=.2, colour="darkgrey") + # , position=position_dodge(.9)) +
+  geom_vline(xintercept = 30, linetype="solid", colour="darkgrey", size=.5) +
+  theme_bw() +
+  labs(x="% of household income",
+       y=NULL,
+       caption="ACS") +
+  ggtitle(label=str_to_sentence("MEDIAN GROSS RENT AS A PERCENTAGE OF HOUSEHOLD INCOME"),
+          subtitle = NULL) +
+  theme(axis.text.y = element_text(hjust = 0)) +
+  scale_x_continuous(breaks=seq(0, 100, 5), labels=label_comma(accuracy=.1), limits=c(0, NA)) +
+  legend_none +
+  caption_left
+p
+
+```
+
+
 
 
 ```{r tidy_census_define_vars}
@@ -419,6 +621,20 @@ sexage <- sexage1 %>%
   mutate(sex=str_remove_all(sex, ":") %>% str_to_lower(),
          agegroup=ifelse(is.na(agegroup), "total", agegroup)) %>%
   filter(sex %in% c("male", "female"))
+
+agerentpct <- uvacs %>%
+  filter(tableid=="B25072") # , endyear==2019)
+
+
+# df %>% select(geotype, geoid, name) %>% 
+#   distinct %>% 
+#   arrange(geotype, geoid) %>%
+#   write_delim(here::here("data", "test.out"), delim=";", quote="needed")
+
+
+```
+
+```{r tidy_census_define_geos}
 
 geos <- read_delim(
 "geotype;geoid;geoname
@@ -445,116 +661,72 @@ school; 3625470; Salem Central School District, New York
 school; 3625770; Saratoga Springs City School District, New York
 school; 3626160; Schuylerville Central School District, New York
 
+zcta; 12816; 12816
+zcta; 12834; 12834
+
 ", col_types=cols(.default = col_character()), trim_ws=TRUE
 )
 geos
-
-# df %>% select(geotype, geoid, name) %>% 
-#   distinct %>% 
-#   arrange(geotype, geoid) %>%
-#   write_delim(here::here("data", "test.out"), delim=";", quote="needed")
-
-
 ```
 
-
-
-```{r tidy_census_safe_functions}
-# functions to safely get data (without erroring if it doesn't exist)
-
-get_acsvars <- function(acsvars, years, dict=uvacs, geos=geos){
-  
-  get_geo <- function(geotype, year, subvars){
-    print(geotype)
-    if(geotype=="state"){
-      df <- get_acs(geography="state",
-                    state=states,
-                    variables=subvars,
-                    year=year)
-      } else if(geotype=="county") {
-        # print(states); print(counties); print(subvars); print(year)
-        df <- get_acs(geography="county",
-              state=states,
-              county=counties,
-              variables=subvars,
-              year=year)
-       } else if(geotype=="cosub"){
-          df <- get_acs(geography="county subdivision",
-                        state=cosubs_state,
-                        county=cosubs_county,
-                        variables=subvars,
-                   year=year)
-        } else if(geotype=="place"){
-          df <- get_acs(geography="place",
-                   state=states,
-                   variables=subvars,
-                   year=year)
-        } else if(geotype=="school"){
-          df <- get_acs(geography="school district (unified)",
-                   state=states,
-                   variables=subvars,
-                   year=year)
-        } else df <- tibble(GEO=NA_character_,
-                            GEOID=NA_character_,
-                            NAME=NA_character_,
-                            variable=NA_character_,
-                            estimate=NA_real_,
-                            moe=NA_real_)
-        
-        df <- df %>%
-          setNames(str_to_lower(names(.))) %>%
-          mutate(geotype=!!geotype,
-                 year=!!year)  %>%
-          select(geotype, year, geoid, geoname=name, variable, estimate, moe)
-        
-        df <- df %>%
-          # drop non-cosub govts that are not specified in the geos file (revisit)
-          left_join(geos %>% 
-              select(geoid, geotype, geos_geoname=geoname) %>%
-              mutate(ingeo=TRUE),
-            by=c("geoid", "geotype")) %>%
-          # drop non-cosub govts that are not specified in the geos file (revisit)
-          filter((geotype=="cosub") | ingeo) %>%
-          select(-ingeo)
-        return(df)
-        }
-  
-  get_year <- function(year, acsvars, geos, dict){
-    # the main program -- direct action for a single year
-    print(year)
-    subvars <- intersect(acsvars, dict$name[dict$endyear==year])
-    map_dfr(geotypes, get_geo, year, subvars)
-  }
-  
-  # these variables are available throughout the function
-  geotypes <- unique(geos$geotype)
-  states <- geos %>% filter(geotype=="state") %>% .$geoid
-  counties <- geos %>% 
-    filter(geotype=="county") %>% 
-    mutate(counties=str_sub(geoid, 3, 5)) %>%
-    .$counties
-  places <- geos %>% filter(geotype=="place") %>% .$geoid
-  cosubs <- geos %>% filter(geotype=="cosub") %>% .$geoid
-  cosubs_state <- str_sub(cosubs, 1, 2)
-  cosubs_county <- ifelse(nchar(cosubs)==5, str_sub(cosubs, 3, 5), NULL)
-  # print(cosubs_county)
-  df <- map_dfr(years, get_year, acsvars, geos, dict)
-  df
-}
-
+```{r tidy_census_define_acsvars}
 acsvars <- c("B01002_001", sexage$name)
+```
+
+```{r get_acs_all}
 
 df1 <- get_acsvars(acsvars=acsvars,
                   years=c(2009, 2014, 2019),
                   dict=uvacs, 
                   geos=geos)
 df1
-count(df1 %>% filter(geotype=="school"), geotype, geoid, geoname)
+saveRDS(df1, here::here("data", "acsdata.rds"))
+
+```
+
+```{r tidy_census_check_results}
+df1 <- get_acsvars(acsvars=acsvars,
+                  years=c(2009, 2014, 2019),
+                  dict=uvacs, 
+                  geos=geos)
+"urban area"
+check <- get_acs(geography="urban area",
+                   # state="NY",
+                   table="B25071",
+                   year=2019)
+
+check <- get_acs(geography="metropolitan statistical area/micropolitan statistical area", # yes, works
+                   # state="NY", # don't use state
+                   table="B25071",
+                   year=2019)
+
+# 
+check <- get_acs(geography="combined statistical area",
+                 # state="NY",
+                 table="B25071",
+                 year=2019)
+
+check %>% filter(str_detect(NAME, ", NY"))
+
 count(df1 %>% filter(geotype=="state"), geotype, geoid, geoname)
+count(df1 %>% filter(geotype=="county"), geotype, geoid, geoname)
+count(df1 %>% filter(geotype=="cosub"), geotype, geoid, geoname)
+count(df1 %>% filter(geotype=="place"), geotype, geoid, geoname)
+count(df1 %>% filter(geotype=="school"), geotype, geoid, geoname)
+count(df1 %>% filter(geotype=="zcta"), geotype, geoid, geoname)
+
+
 count(df1, geotype)
 count(df1, geotype, geoid, geoname)
 # 25 place   3664771    Salem CDP, New York                                49
-# 26 place   3664771    Salem village, New York                            98
+# 26 place   3664771    Salem village, New York  98
+
+get_acs(geography="zcta",
+                        state="NY",
+                        zcta=c(12816, 12834),
+                        variables="B01002_001",
+                        year=2014)
+
 
 df2 %>% 
   filter(geoid=="3602550") %>%
@@ -701,23 +873,116 @@ df <- get_acs(geography="zcta",
           variables="B01002_001",
           year=year)
 
+```
+
+```{r census_geo}
+gdir <- r"(E:\data\acs\sf\2019_5year\)"
+fn <- "5_year_Mini_Geo.xlsx"
+
+rgeo1 <- read_excel(paste0(gdir, fn), sheet="ny")
+
+rgeo2 <- rgeo1 %>%
+  setNames(c("stabbr", "logrecno", "geoid", "geoname")) %>%
+  mutate(geoleft=str_sub(geoid, 1, 5),
+         geomid=str_sub(geoid, 6, 7),
+         georight=str_sub(geoid, 8, nchar(geoid)))
+count(rgeo2, geoleft) %>% ht
+count(rgeo2, geomid) %>% ht
+count(rgeo2, georight) %>% ht
+
+rgeo3 <- rgeo2 %>%
+  select(stabbr, logrecno, geoid, geoname, geotype=geoleft, geonums=georight)
+
+# which are the uniques?
+rgeo3 %>%
+  group_by(geotype) %>%
+  mutate(n=n()) %>%
+  ungroup %>%
+  filter(n==1)
+
+# geonums that start with something other than 36 are...
+rgeoxpart <- rgeo3 %>%
+  filter(!str_detect(geoname, "part"),
+         !str_detect(geoname, "Remainder"))
+count(rgeoxpart, geotype)
+
+tmp <- rgeo3 %>%
+  group_by(geotype) %>%
+  mutate(n=n()) %>%
+  ungroup %>%
+  arrange(geotype, geoid)
+
+# logrecno geoid     geoname                                                               geoty
+# <chr>    <chr>     <chr>                                                                 <chr>
+# 0000001  04000US36 New York                                                              04000
+# 0000002  04001US36 New York -- Urban                                                     04001
+# 0000003  04043US36 New York -- Rural                                                     04043
+# 0000004  040A0US36 New York -- In metropolitan or micropolitan statistical area          040A0
+# 0000005  040C0US36 New York -- In metropolitan statistical area                          040C0
+# 0000006  040C1US36 New York -- In metropolitan statistical area -- in principal city     040C1
+# 0000007  040C2US36 New York -- In metropolitan statistical area -- not in principal city 040C2
+# 0000008  040E0US36 New York -- In micropolitan statistical area                          040E0
+# 0000009  040E1US36 New York -- In micropolitan statistical area -- in principal city     040E1
+# 0000010  040E2US36 New York -- In micropolitan statistical area -- not in principal city 040E2
+# 0000011  040G0US36 New York -- Not in metropolitan or micropolitan statistical area      040G0
+# 0000012  040H0US36 New York -- Not in metropolitan statistical area                      040H0
+
+# we'll want geotypes
+# 04000, 04001, 04043
+# 05000 counties (5 nyc)
+# 06000 cities, towns, villages, CDPs
+
+
+rgcounty <- rgeo3 %>%
+  filter(geotype=="05000")
+
+
+gdf <- read_csv(paste0(gdir, "ny/", "g20195ny.csv"),
+                col_names = FALSE)
+
 
 ```
 
+```{r census_txt}
+dir <- r"(E:\data\acs\sf\2019_5year\ny\)"
+fn <- "e20195ny.txt"
 
-```{r get_acs_all}
+# FILEID File Identification 6 Characters
+# FILETYPE File Type 6 Characters
+# STUSAB State/U.S.-Abbreviation (USPS) 2 Characters
+# CHARITER Character Iteration 3 Characters
+# SEQUENCE Sequence Number 4 Characters
+# LOGRECNO Logical Record Number 7 Characters
+idvars <- c("fileid", "filetype", "stusab", "chariter", "sequence", "logrecno")
+
+rdf <- vroom(paste0(dir, fn), col_names=FALSE, 
+             col_types = cols("c", "c", "c", "c", "c", "c",
+                              .default= col_double()))
+# rdf <- read_csv(paste0(dir, fn))
+glimpse(rdf[, 1:7])
+names(rdf)
+
+# xvars <- paste0("x", 1:(ncol(rdf) - length(idvars)))
+# vnames <- c(idvars, xvars)
+names(rdf)[1:length(idvars)] <- idvars
+glimpse(rdf)
+names(rdf) <- str_to_lower(names(rdf))
+
+saveRDS(rdf, paste0(dir, "e20195ny.rds"))
+
+rdf <- readRDS(paste0(dir, "e20195ny.rds"))
+glimpse(rdf[, 1:10])
+
+tmp <- rdf %>%
+  filter(sequence=="0001") %>%
+  select(1:x55)
 
 ```
-
-
-
-
 
 ```{r census_reporter}
 # https://censusreporter.org/profiles/16000US3611825-cambridge-ny/
 
 ```
-
 
 ```{r cornell}
 # https://pad.human.cornell.edu/profiles/Washington.pdf
@@ -725,13 +990,6 @@ df <- get_acs(geography="zcta",
 
 ```
 
-
 # WHY DO YOUNG PEOPLE COME TO A RURAL AREA?
 
 # HOW DO IMPORTANT CHARACTERISTICS OF THE CAMBRIDGE AREA COMPARE AND CHANGE OVER TIME?
-
-
-
-
-
-
