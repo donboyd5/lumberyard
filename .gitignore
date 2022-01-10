@@ -1,6 +1,8 @@
 # directories to ignore
-documents/
 data/
+documents/
+results/
+
 
 # filetypes to ignore
 *.csv
