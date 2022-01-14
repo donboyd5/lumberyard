@@ -1,6 +1,7 @@
 # directories to ignore
 data/
 documents/
+map_data/
 results/
 
 

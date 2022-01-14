@@ -38,6 +38,7 @@ library(RcppRoll)
 library(fredr)
 library(btools)
 library(tidycensus)
+library(archive)
 
 # graphics
 library(scales)
@@ -57,6 +58,17 @@ library(gt)
 library(maps)
 # https://cran.r-project.org/web/packages/usmap/vignettes/mapping.html
 library(usmap)
+library(ggmap)
+register_google(key = gmaps_apikey)
+library(ggspatial)
+library(sf)
+library(tigris)
+options(tigris_use_cache = TRUE)
+# library(remotes)
+# remotes::install_github("ropensci/osmdata")
+library(osmdata) # package for working with streets
+# library(showtext) # for custom fonts
+library(rvest)
 
 ```
 
@@ -87,11 +99,24 @@ str_detect_any <- function(s, elements){
     # elements <- c("one", "3", "str", "7")
     # 
     # str_detect_any(s, elements)
+}
+
+str_extract_before_first <- function(s, first){
+  # str_extract(ulabel, '^[^!]+'),  # everything before first !
+  pattern <- paste0("^[^", first, "]+")
+  str_extract(s, pattern)
+}
+
+str_extract_after_last <- function(s, last){
+  # str_extract(ulabel, '![^!]+$'),  # everything after last !
+  pattern <- paste0("^[^", last, "]+$")
+  str_extract(s, pattern)
   }
 
 
 #..regex notes ----
 # str_extract(ulabel, '![^!]+$'),  # everything after last !
+# str_extract(ulabel, '^[^!]+'),  # everything before first !
 #  "^[^,]+"  # everything before first ,
 # x <- c("abc, def", "hijklm ,zyz")  str_extract(x, "^[^,]+")
 
@@ -112,8 +137,9 @@ newyork_state <- "36"
 #.. api keys ----
 source("~/R_projects/api_keys.r", verbose=TRUE)
 fredr_set_key(fred_apikey)
+gmaps_apikey <- "AIzaSyDFWxscpciI2HDziBJ3CIhqxKWEqbaD6VM"
 ## Not run: 
-# census_api_key(census_apikey, install = TRUE)
+# census_api_key(census_apikey, install = TRUE, overwrite=TRUE)
 # First time, reload your environment so you can use the key without restarting R.
 # readRenviron("~/.Renviron")
 # Sys.getenv("CENSUS_API_KEY")  # check
@@ -124,7 +150,13 @@ legend_notitle <- theme(legend.title = element_blank())
 caption_left <- theme(plot.caption = element_text(hjust = 0))
 
 #.. source notes ----
-acs_source <- "American Community Survey 5-year summary file"
+source_acs <- "American Community Survey 5-year summary file"
+source_padcoproj <- "Cornell Program on Applied Demographics, County Projections 2018 (https://pad.human.cornell.edu/counties/projections.cfm)"
+source_hud <- "HUD Comprehensive Housing Affordability Strategy data, based on 2014-2018 ACS"
+
+# https://pad.human.cornell.edu/schools/projections.cfm
+# https://www.nyeducationdata.org/
+# https://www.ers.usda.gov/data-products/atlas-of-rural-and-small-town-america/download-the-data/
 
 ```
 
@@ -473,11 +505,244 @@ saveRDS(acsdata, here::here("data", "acsdata.rds"))
 
 ```
 
+```{r ONETIME_pad_projections}
+# Cornell Washington County projections
+pad1 <- read_excel(here::here("data", "padprojections115.xlsx"))
+
+pad2 <- pad1 %>%
+  setNames(str_to_lower(names(.))) %>%
+  pivot_longer(-c(1:8), names_to = "year") %>%
+  mutate(year=str_sub(year, 4, 7))
+glimpse(pad2)
+count(pad2, county, county_descr)
+count(pad2, sexcode, sex_descr)
+count(pad2, agegrpcode, agegrp_descr)
+count(pad2, racecode, race_descr) # all races
+
+pad3 <- pad2 %>%
+  select(-racecode, -race_descr) %>%
+  rename(ccode=county, county=county_descr, 
+         sex=sex_descr,
+         agecode=agegrpcode, agegrp=agegrp_descr) %>%
+  mutate(year=as.integer(year), sex=str_to_lower(sex))
+glimpse(pad3)
+
+pad3 %>%
+  filter(sex=="all", agecode==-999) %>%
+  ggplot(aes(year, value)) +
+  geom_line() +
+  geom_point()
+
+saveRDS(pad3, here::here("popproj_pad_washco.rds"))
+
+```
+
+
+```{r HUD_tables}
+# save each table as its own file, cleaned a bit
+dchas <- r"(E:\data\acs\hud_chas\)"
+dtabs <- paste0(dchas, "tables/")
+
+stdir <- r"(E:\data\acs\hud_chas\2014thru2018-040-csv_states\040\)"
+codir <- r"(E:\data\acs\hud_chas\2014thru2018-050-csv_counties\050\)"
+mcddir <- r"(E:\data\acs\hud_chas\2014thru2018-060-csv\060\)"
+placedir <- r"(E:\data\acs\hud_chas\2014thru2018-160-csv_places\160\)"
+citydir <- r"(E:\data\acs\hud_chas\2014thru2018-170-csv_consolidatedcities\170\)"
+chasdirs <- c(stdir, codir, mcddir, placedir, citydir)
+
+# the state directory should have a master list of tables
+tabs <- list.files(path=stdir, pattern="*.csv", full.names = FALSE)
+tabs
+tools::file_path_sans_ext(tabs)
+tab <- tabs[1]
+dir <- chasdirs[4]
+
+for(tab in tabs){
+  a <- proc.time()
+  print(tab)
+  getfile <- function(dir, tab){
+    
+    print(dir)
+    type <- case_when(str_detect(dir, "states") ~ "state",
+                      str_detect(dir, "counties") ~ "county",
+                      str_detect(dir, "060") ~ "mcd",
+                      str_detect(dir, "places") ~ "place",
+                      str_detect(dir, "consolidatedcities") ~ "concit",
+                      )
+
+    # dirlist <- list.files(path=stdir, pattern="*.csv", full.names = FALSE)
+    path <- paste0(dir, tab)
+    idlist <- c("source", "sumlevel", "geoid", "name", "st", "cnty", "mcd", "concit", "place")
+    
+    df <- read_csv(path, col_types = cols(.default="c")) %>%
+      pivot_longer(-any_of(idlist), names_to="vname") %>%
+      mutate(type=!!type,
+             value=as.numeric(value)) %>%
+      select(type, geoid, geoname=name, st, vname, value)# %>%
+      # separate(vname, into=c("table", "est")) # %>%
+      # mutate(etype=str_sub(est, 1, 3))
+           #estnum=str_sub(est, 4, nchar(est)) %>% as.integer())
+    df
+  }
+  df <- map_dfr(chasdirs, getfile, tab)
+  # df2 <- df %>%
+  #   separate(vname, into=c("table", "est")) %>%
+  #   mutate(etype=str_sub(est, 1, 3),
+  #          estnum=str_sub(est, 4, nchar(est)) %>% as.integer()) %>%
+  #   pivot_wider(names_from = etype)
+  
+  outfile <- tools::file_path_sans_ext(tab) %>% str_to_lower()
+  
+  saveRDS(df, paste0(dtabs, outfile, ".rds"))
+  b <- proc.time()
+  print(b - a)
+}
+
+glimpse(df2)
+
+
+
+
+
+```
+
+
+
+```{r HUD_data}
+# https://www.huduser.gov/portal/datasets/cp.html
+# states, counties, places, consolidated cities
+dchas <- r"(E:\data\acs\hud_chas\)"
+
+stdir <- r"(E:\data\acs\hud_chas\2014thru2018-040-csv_states\040\)"
+codir <- r"(E:\data\acs\hud_chas\2014thru2018-050-csv_counties\050\)"
+mcddir <- r"(E:\data\acs\hud_chas\2014thru2018-060-csv\060\)"
+placedir <- r"(E:\data\acs\hud_chas\2014thru2018-160-csv_places\160\)"
+citydir <- r"(E:\data\acs\hud_chas\2014thru2018-170-csv_consolidatedcities\170\)"
+chasdirs <- c(stdir, codir, mcddir, placedir, citydir)
+
+f <- function(path){
+  idlist <- c("source", "sumlevel", "geoid", "name", "st", "cnty", "mcd", "concit", "place")
+  read_csv(path) %>%
+    pivot_longer(-any_of(idlist), names_to="vname")
+}
+
+for(dir in chasdirs){
+  print(dir)
+  paths <- list.files(path=dir, pattern="*.csv", full.names = TRUE)
+  df <- map_dfr(paths, f)
+  saveRDS(df, paste0(dir, "allfiles.rds"))
+}
+
+
+# slim and trim each file in an effort to make it easier to get good files
+# dir <- chasdirs[1]
+for(dir in chasdirs[4:5]){
+  print(dir)
+  df <- readRDS(paste0(dir, "allfiles.rds"))
+  df2 <- df %>%
+    select(-source, -sumlevel) %>%
+    rename(geoname=name) %>%
+    separate(vname, into=c("table", "est"), remove=FALSE) %>%
+    mutate(type=case_when(str_sub(geoid, 1, 3)=="040" ~ "state",
+                        str_sub(geoid, 1, 3)=="050" ~ "county",
+                        str_sub(geoid, 1, 3)=="060" ~ "mcd",
+                        str_sub(geoid, 1, 3)=="160" ~ "place",
+                        str_sub(geoid, 1, 3)=="170" ~ "concit",
+                        TRUE ~ "other"
+                        ),
+           st=str_sub(geoid, 8, 9),
+           etype=str_sub(est, 1, 3),
+           estnum=str_sub(est, 4, nchar(est)) %>% as.integer()) %>%
+    select(geoid, geoname, st, type, table, etype, estnum, value)
+  saveRDS(df2, paste0(dir, "clean.rds"))
+}
+
+
+# now combine the different chas files
+get_clean <- function(dir){
+  # don't keep nonessential variables
+  print(dir)
+  readRDS(paste0(dir, "clean.rds")) %>%
+    select(geoid, name, vname, value)
+}
+df <- map_dfr(chasdirs, get_clean)
+saveRDS(df, paste0(dchas, "chasall.rds"))
+
+# now create a clean file
+chasall <- readRDS(paste0(dchas, "chasall.rds")) # 162m obs
+head(chasall)
+
+chas2 <- chasall %>%
+  mutate(type=case_when(str_sub(geoid, 1, 3)=="040" ~ "state",
+                        str_sub(geoid, 1, 3)=="050" ~ "county",
+                        str_sub(geoid, 1, 3)=="160" ~ "place",
+                        str_sub(geoid, 1, 3)=="170" ~ "concit",
+                        TRUE ~ "other"
+                        ))
+count(chas2, type)
+
+chasny <- chas2 %>%
+  filter(str_sub(geoid, 8, 9)=="36") %>%
+  # filter(row_number() < 10e3) %>%
+  separate(vname, into=c("table", "est"), remove=FALSE) %>%
+  mutate(etype=str_sub(est, 1, 3),
+         estnum=str_sub(est, 4, nchar(est)) %>% as.integer()) %>%
+  select(geoid, name, type, table, etype, estnum, value) %>%
+  pivot_wider(names_from = etype)
+count(chasny, type)
+
+saveRDS(chasny, paste0(dchas, "chasny.rds"))
+
+
+tmp <- chasny %>%
+  filter(str_detect(name, "Cambridge"))
+
+# T1_est3	Subtotal	Owner occupied	has 1 or more of the 4 housing unit problems (lacks kitchen or plumbing, more than 1 person per room, or cost burden greater than 30%)	All
+# T1_est4	Subtotal	Owner occupied	has 1 or more of the 4 housing unit problems (lacks kitchen or plumbing, more than 1 person per room, or cost burden greater than 30%)	less than or equal to 30% of HAMFI
+
+tmp <- chasny %>%
+  filter(table=="T1", estnum %in% 1:4) %>%
+  mutate(estnum=paste0("est", estnum)) %>%
+  select(-moe) %>%
+  pivot_wider(names_from = estnum, values_from = est) %>%
+  mutate(pctoo=est2 / est1,
+         oopctprob=est3 / est2)
+
+# determine places of interest
+nyareas <- chasny %>%
+  select(geoid, name, type) %>%
+  distinct()
+
+counties <- c("Albany", "Saratoga", "Warren", "Washington")
+places <- c("Cambridge", "Greenwich", "Argyle", "Salem")
+poi <- nyareas %>%
+  filter(type=="state" |
+           type=="county" & str_detect_any(name, counties) |
+           type=="place" & str_detect_any(name, places))
+
+tmp %>%
+  filter(geoid %in% poi$geoid) %>%
+  arrange(oopctprob)
+
+# has 1 or more of the 4 housing unit problems (lacks kitchen or plumbing, more than 1 person per room, or cost burden greater than 30%)
+
+# df <- readRDS(paste0(chasdirs[3], "allfiles.rds"))
+# dim(df)
+# sumlevel
+# 1 char
+# 2 char, 15.9m recs
+# 3 
+
+
+```
+
+
 
 # DATA ANALYSIS
 ```{r load_data}
 uvacs <- readRDS(here::here("data", "uvacs.rds"))
 acsdata <- readRDS(here::here("data", "acsdata.rds"))
+popwash <- readRDS(here::here("popproj_pad_washco.rds"))
 
 count(acsdata, tableid, concept)
 
@@ -503,7 +768,7 @@ pdata <- acsdata %>%
   arrange(sname, year)
 
 # capt1 <- paste0("Note: Costs above 30 percent are generally often defined as burdensome. Smaller geographic areas generally have a larger margin of error.")
-capt <- paste0("Source: ", acs_source, ".")
+capt <- paste0("Source: ", source_acs, ".")
 # capt <- paste0(capt1, "\n", capt2)
 
 p <- pdata %>%
@@ -531,7 +796,7 @@ write_csv(pdata, here::here("results", "fig_median_age_bars_data.csv"))
 ```
 
 ### Age breakdown
-```{r fig_pop_pyramid}
+```{r fig_pop_pyramid_areas}
 geokeeps <- c(newyork_state, washington_county, cambridge_village, greenwich_village)
 # geokeeps <- c(newyork_state, washington_county, cambridge_village, greenwich_village,
 #               cambridge_town, greenwich_town)
@@ -625,8 +890,174 @@ p <- pdata %>%
 
 p
 
-ggsave(here::here("results", "fig_pop_pyramid.png"), plot=p, width=10, height=8, scale=1)
-write_csv(pdata, here::here("results", "fig_pop_pyramid_data.csv"))
+ggsave(here::here("results", "fig_pop_pyramid_areas.png"), plot=p, width=10, height=8, scale=1)
+write_csv(pdata, here::here("results", "fig_pop_pyramid_areas_data.csv"))
+
+```
+
+
+```{r fig_pop_pyramid_years}
+#.. moes are too large to trust any of this! ----
+# finer groups
+agegroups <- read_csv(
+"agegroup, agelabel, flow, fhigh, mlow, mhigh
+0, total, 26, 26, 2, 2
+1, <= 17, 27, 30, 3, 6
+2, 18 to <= 24, 31, 34, 7, 10
+3, 25 to <= 34, 35, 36, 11, 12
+4, 35 to <= 44, 37, 38, 13, 14
+5, 45 to <= 64, 39, 43, 15, 19
+5, 65 to <= 84, 44, 48, 20, 24
+6, >=85, 49, 49, 25, 25")
+
+
+vals <- function(low, high) {
+  tibble(vnum=str_pad(low:high, width = 3, side = "left", pad = "0"))
+}
+
+agegroups_long <- agegroups %>%
+  pivot_longer(-c(agegroup, agelabel)) %>%
+  mutate(sex=str_sub(name, 1, 1),
+         type=str_sub(name, 2, -1)) %>%
+  select(-name) %>%
+  pivot_wider(names_from = type) %>%
+  mutate(sex=factor(sex, levels=c("m", "f"), labels=c("male", "female"))) %>%
+  group_by(agegroup, agelabel, sex) %>%
+  summarise(vals(low, high), .groups="drop")
+
+acsdata %>%
+  filter(tableid=="B01001") %>%
+  count(ulab4, ulab3, vnum) 
+
+acsdata %>%
+  filter(tableid=="B01001", geoid==cambridge_village, year==2019)
+  
+tmp <- acsdata %>%
+  filter(tableid=="B01001",
+         geoid ==cambridge_village) %>%
+  select(geotype, geoid, sname, variable, year, estimate, moe, concept, 
+         vnum, ulab3, ulab4, ulabel) %>%
+  left_join(agegroups_long, by="vnum") %>%
+  filter(!is.na(sex)) %>%
+  group_by(geotype, geoid, sname, sex, agegroup, agelabel, year) 
+
+tmp %>% filter(year==2019) %>%
+  select(geotype, sname, year, vnum, sex, agegroup, agelabel, estimate, moe) %>%
+  mutate(moepct=moe / estimate)
+  
+
+basedata <- acsdata %>%
+  filter(tableid=="B01001",
+         geoid ==cambridge_village) %>%
+  select(geotype, geoid, sname, variable, year, estimate, moe, concept, 
+         vnum, ulab3, ulab4, ulabel) %>%
+  left_join(agegroups_long, by="vnum") %>%
+  filter(!is.na(sex)) %>%
+  group_by(geotype, geoid, sname, sex, agegroup, agelabel, year) %>%
+  summarise(estimate=sum(estimate), .groups="drop") %>%
+  # now get pct share of area total population
+  group_by(geotype, geoid, sname, year) %>%
+  mutate(share=estimate / estimate[agegroup==0]) %>%
+  ungroup
+
+basedata %>%
+  filter(geoid==cambridge_village, year==2019)
+
+pdata <- basedata %>%
+  filter(agegroup!=0) %>%  # geoid %in% c(cambridge_village, greenwich_village), 
+  mutate(geoid=factor(geoid, levels=geokeeps),
+         order=as.integer(geoid),
+         sname=fct_reorder(sname, order, min),
+         pshare=ifelse(sex=="male", -share, share)) %>% # order we want
+  arrange(sname, year)
+
+clrs_br <- c("blue", "red")
+clrs <- c('#ef8a62', '#67a9cf') %>% rev()
+brks <- seq(-1, 1, .1)
+brk_labs <- percent(abs(brks), accuracy=.1)
+p <- pdata %>%
+  ggplot(aes(x=pshare,
+             y=reorder(agelabel, agegroup),
+             fill = sex)) + 
+  geom_bar(stat = "identity") +
+  scale_x_continuous(name="% of the area's total population", breaks=brks,
+                     labels = percent(abs(brks), accuracy=.1)) +
+  scale_y_discrete(name=NULL) +
+  scale_fill_manual(values=clrs) +
+  theme_bw() +
+  legend_notitle +
+  ggtitle("Population share by age group") +
+  facet_wrap(~ year, ncol = 1)
+  # theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+p
+
+ggsave(here::here("results", "fig_pop_pyramid_years.png"), plot=p, width=8, height=10, scale=1)
+write_csv(pdata, here::here("results", "fig_pop_pyramid_years_data.csv"))
+
+```
+
+```{r fig_washco_popproj}
+glimpse(popwash)
+count(popwash, agecode, agegrp) %>% ht
+
+pdata1 <- popwash %>%
+  filter(sex=="all") %>%
+  mutate(agegrp2=case_when(agecode == -999 ~ "total",
+                           agecode %in% 0:17 ~ "agele17",
+                           agecode %in% 18:24 ~ "age1824",
+                           agecode %in% 25:34 ~ "age2534",
+                           agecode %in% 35:44 ~ "age3544",
+                           agecode %in% 45:64 ~ "age4564",
+                           agecode %in% 65:84 ~ "age6584",
+                           agecode == 85 ~ "age85p",
+                           agecode == 999 ~ "median")) %>%
+  group_by(year, agegrp=agegrp2) %>%
+  summarise(n=n(), value=sum(value), .groups="drop")
+
+pdata1
+pdata1 %>% filter(agegrp=="median") %>% ggplot(aes(year, value)) + geom_line() + geom_point()
+
+pdata1 %>%
+  filter(str_detect(agegrp, "age")) %>%
+  ggplot(aes(year, value, colour=agegrp)) +
+  geom_line() +
+  geom_point()
+
+capt1 <- "Note: vertical axis does not start at zero."
+capt2 <- paste0("Source: ", source_padcoproj, ".")
+capt <- paste0(capt1, "\n", capt2)
+pdata <- pdata1 %>%
+  filter(str_detect(agegrp, "age")) %>%
+  mutate(agegrp = case_when(agegrp %in% c("agele17", "age1824") ~ "agele24",
+                            agegrp %in% c("age2534", "age3544") ~ "age2544",
+                            agegrp %in% c("age6584", "age85p") ~ "age65p",
+                            TRUE ~ agegrp)) %>%
+  group_by(year, agegrp) %>%
+  summarise(value=sum(value), .groups="drop")
+
+p <- pdata %>%
+  mutate(agegrp=factor(agegrp, 
+                       levels=c("agele24", "age2544", "age4564", "age65p"),
+                       labels=c("<= 24", "25-44", "45-64", "65+"))) %>%
+  # arrange(year, agegrp) %>%
+  ggplot(aes(year, value, colour=agegrp)) +
+  geom_line(size=1) +
+  geom_point(size=1) +
+  scale_x_continuous(name=NULL) +
+  scale_y_continuous(name="# of people", 
+                     breaks=seq(0, 60e3, 2e3), 
+                     labels=label_comma(accuracy=1),
+                     limits=c(NA, NA)) +
+  scale_colour_discrete(name="age group") +
+  ggtitle("Cornell population projections for Washington County") +
+  labs(caption = capt) +
+  theme_bw() +
+  caption_left
+p
+
+ggsave(here::here("results", "fig_washco_popproj.png"), plot=p, width=10, height=8, scale=1)
+write_csv(pdata, here::here("results", "fig_washco_popproj_data.csv"))
 
 ```
 
@@ -642,6 +1073,268 @@ write_csv(pdata, here::here("results", "fig_pop_pyramid_data.csv"))
 
 
 # Housing in and around the Village of Cambridge
+
+```{r gt_example}
+gt() %>%
+  cols_hide(stabbr) %>%
+  tab_header(
+    title = "State correctional officer wages, selected years"
+      ) %>%
+  cols_label(stname="",
+             wage_2012="2012",
+             wage_2016="2016",
+             wage_2020="2020",
+             pdiff_2012="2012",
+             pdiff_2016="2016",
+             pdiff_2020="2020") %>%
+  cols_align(align="left", columns = stname) %>%
+  tab_spanner(
+    label = html("Average wage"),
+    columns = contains("wage")
+    ) %>%
+  tab_spanner(
+    label = "California wage % above other area",
+    columns = contains("pdiff")
+    )  %>%
+  fmt_number(
+    columns=c(contains("wage")),
+    pattern = "${x}",
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = contains("pdiff"),
+    decimals = 1) %>%
+  fmt_missing(columns=everything(), missing_text="") %>%
+  fmt_missing(contains("pdiff"), rows=2) %>%
+  tab_source_note(paste0("Sources: ", source_oesres, ".")) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      rows = c(1, 4, 7)
+    )
+  ) %>%
+  cols_width(
+    stname ~ px(200),
+    everything() ~ px(100)
+    )
+
+tab
+gtsave(tab, filename="tab_wages_states_oes.png", path=here::here("results"))
+```
+
+
+```{r define_poi}
+# places of interest
+# ONETIME
+# dhtabs <- r"(E:\data\acs\hud_chas\tables\)"
+# poi1 <- readRDS(paste0(dhtabs, "table1.rds")) %>%
+#   filter(st=="36")
+#   
+# poi2 <- poi1 %>%
+#   select(geoid, geoname, type) %>%
+#   distinct()
+# saveRDS(poi2, here::here("data", "hud_nyareas.rds"))
+# count(poi2, type)
+
+nyareas <- readRDS(here::here("data", "hud_nyareas.rds"))
+
+counties <- c("Albany", "Saratoga", "Warren", "Washington")
+places <- c("Cambridge", "Greenwich", "Argyle", "Salem", "White Creek")
+nypoi <- nyareas %>%
+  filter(type=="state" |
+           type=="county" & str_detect_any(geoname, counties) |
+           type=="place" & str_detect_any(geoname, places) |
+           type=="mcd" & 
+           str_detect(geoname, "Washington County") & 
+           str_detect_any(geoname, places))
+nypoi
+
+```
+
+
+```{r hudny_prep}
+dhtabs <- r"(E:\data\acs\hud_chas\tables\)"
+  
+# df2 <- df %>%
+  #   separate(vname, into=c("table", "est")) %>%
+  #   mutate(etype=str_sub(est, 1, 3),
+  #          estnum=str_sub(est, 4, nchar(est)) %>% as.integer()) %>%
+  #   pivot_wider(names_from = etype)
+
+df1 <- readRDS(paste0(dhtabs, "table1.rds"))
+glimpse(df1)
+
+df14a <- readRDS(paste0(dhtabs, "table14a.rds"))
+glimpse(df14a)
+
+df14b <- readRDS(paste0(dhtabs, "table14b.rds"))
+glimpse(df14b)
+
+nyhud1 <- bind_rows(df1 %>% filter(st=="36"),
+                   df14a %>% filter(st=="36"),
+                   df14b %>% filter(st=="36")) %>%
+  select(-st)
+
+
+nyhud2 <- nyhud1 %>%
+  filter(geoid %in% nypoi$geoid) %>%
+  separate(vname, c("table", "estmoe")) %>%
+  mutate(vtype=str_sub(estmoe, 1, 3),
+         vnum=str_sub(estmoe, 4, nchar(estmoe)) %>% as.integer)
+glimpse(nyhud2)
+summary(nyhud2)
+count(nyhud2, table)
+
+
+# .. key variables ----
+# T14A_est1	Total	Total: Vacant-for-sale housing units	All
+# T14A_est2	Detail	Vacant-for-sale	housing unit lacks complete kitchen or plumbing facilities
+# T14B_est1	Total	Total: Vacant-for-rent housing units	All
+# T14B_est2	Detail	Vacant-for-rent	housing unit lacks complete kitchen or plumbing facilities
+
+# T1_est1	 Total	Total: Occupied housing units
+
+# owner occupied
+# T1_est2	 .	Owner occupied
+# T1_est3	 .. has 1 or more of the 4 housing unit problems (lacks kitchen or plumbing, more than 1 person per room, or cost burden greater than 30%)
+# T1_est4  ... less than or equal to 30% of HAMFI
+# T1_est11 ... greater than 30% but less than or equal to 50% of HAMFI
+# T1_est18 ... greater than 50% but less than or equal to 80% of HAMFI
+# T1_est25 ... greater than 80% but less than or equal to 100% of HAMFI
+
+# T1_est75 .  Renter occupied
+# T1_est76 .. has 1 or more of the 4 housing unit problems (lacks kitchen or plumbing, more than 1 person per room, or cost burden greater than 30%)
+# T1_est77 ... less than or equal to 30% of HAMFI
+# T1_est84 ... greater than 30% but less than or equal to 50% of HAMFI
+# T1_est91 ... greater than 50% but less than or equal to 80% of HAMFI
+# T1_est98 ... greater than 80% but less than or equal to 100% of HAMFI
+# T1_est105 ... greater than 100% of HAMFI
+
+t1enums <- c(1:4, 11, 18, 25, 75:77, 84, 91, 98, 105)
+
+nyhud3 <- nyhud2 %>%
+  filter((table=="T1" & vnum %in% t1enums) |
+           (table %in% c("T14A", "T14B") & vnum %in% 1:2))
+count(nyhud3, table, vnum)
+
+# check on moe
+nyhud4 <- nyhud3 %>%
+  select(-estmoe) %>%
+  pivot_wider(names_from = vtype) %>%
+  mutate(moepct=moe / est)
+
+```
+
+
+```{r stock}
+tabdata <- nyhud4 %>%
+  filter(vnum==1) %>%
+  select(type, geoname, table, est) %>%
+  mutate(table=factor(table,
+                    levels=c("T1", "T14A", "T14B"),
+                    labels=c("occ", "vfs", "vfr"))) %>%
+  pivot_wider(names_from = table, values_from = est) %>%
+  mutate(vacant=vfs + vfr,
+         avail=occ + vacant,
+         vacpct=vacant / avail,
+         geoname=ifelse(type=="state", paste0(geoname, " State"), geoname),
+         geoname=str_extract(geoname, '^[^,]+')
+         ) %>%
+  select(type, geoname, avail, occ, vacant, vacpct)
+
+tab <- tabdata %>%
+  #  select(-type) %>%
+  group_by(type) %>%
+  gt() %>%
+  tab_header(
+    title = "Occupied or vacant & available housing"
+      ) %>%
+  cols_label(type="",
+             geoname="",
+             avail="Total # units",
+             occ="# occupied",
+             vacant="# vacant & available",
+             vacpct="vacant as % of total") %>%
+  cols_align(align="left", columns = geoname) %>%
+  fmt_number(
+    columns=c(avail, occ,  vacant),
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = vacpct,
+    decimals = 1) %>%
+  tab_source_note(paste0("Source: ", source_hud, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    locations = cells_column_labels(columns = c(vacant, vacpct))
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_body(
+      rows=str_detect(geoname, "Cambridge")
+      )
+  ) 
+
+gtsave(tab, filename="tab_stock_hud.png", path=here::here("results"))
+write_csv(tabdata, file=here::here("results", "tab_stock_hud_data.csv"))
+
+```
+
+
+```{r tenure}
+
+# tenure
+tabdata <- hudnuy_base %>%
+  filter(estnum %in% c(1, 2, 75)) %>%
+  select(-moe) %>%
+  mutate(estnum=factor(estnum,
+                       levels=c(1, 2, 75),
+                       c("total", "own", "rent"))) %>%
+  pivot_wider(names_from = estnum, values_from = c(est, moepct)) %>%
+  mutate(est_ownpct=est_own / est_total) %>%
+  select(type, geoid, geoname, est_total, est_own, est_rent, est_ownpct, everything())
+
+tab <- tabdata %>%
+  select(geoname, starts_with("est")) %>%
+  gt() %>%
+  tab_header(
+    title = "Housing tenure in our area"
+      ) %>%
+  cols_label(geoname="",
+             est_total="Total # units",
+             est_own="# owner occupied"
+             est_rent="# renter occupied"
+             wage_2016="2016",
+             wage_2020="2020",
+             pdiff_2012="2012",
+             pdiff_2016="2016",
+             pdiff_2020="2020") %>%
+  cols_align(align="left", columns = stname) %>%
+  tab_spanner(
+    label = html("Average wage"),
+    columns = contains("wage")
+    ) %>%
+  tab_spanner(
+    label = "California wage % above other area",
+    columns = contains("pdiff")
+    )  %>%
+  fmt_number(
+    columns=c(contains("wage")),
+    pattern = "${x}",
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = contains("pdiff"),
+    decimals = 1) 
+  
+```
+
+
+
 ## Housing affordability
 ```{r plot_median_rent_income}
 excludes <- c("Argyle", "Fort", "Dresden", "Hampton", "Hebron", "Whitehall", "Putnam", "Granville", "Kingsb", "Hartf")
@@ -651,7 +1344,7 @@ pdata <- acsdata %>%
   mutate(cambvillage=geoid==cambridge_village)
 
 capt1 <- paste0("Note: Costs above 30 percent are generally often defined as burdensome. Smaller geographic areas generally have a larger margin of error.")
-capt2 <- paste0("Source: ", acs_source, ", 2015-2019.")
+capt2 <- paste0("Source: ", source_acs, ", 2015-2019.")
 capt <- paste0(capt1, "\n", capt2)
 # xlab <- "% of household income\n<--- more affordable : less affordable --->"
 xlab <- "% of household income"
@@ -801,6 +1494,689 @@ tmp <- rdf %>%
 
 ```
 
+
+## acs package
+```{r}
+library(acs)
+showClass("acs")
+# ONETIME
+# api.key.install(key=census_apikey, file = "key.rda")
+# acs.tables.install()
+
+geo_us <- geo.make(us=TRUE)
+geo_nys <- geo.make(state="NY")
+geo_nyscounties <- geo.make(state="NY", county="*")
+geo_nysusds <- geo.make(state="NY", school.district.unified="*")
+geo_zips <- geo.make(zip.code=c(12816, 12834))
+geo_all <- geo_us + geo_nys + geo_nyscounties + geo_nysusds
+
+geo_zips <- geo.make(zip.code="12816")
+geo_all <- geo_zips
+
+obj <- acs.fetch(endyear=2014, 
+                       span = 5, 
+                       geography=geo_all, 
+                       table.number="B01001",
+                       key=census_apikey)
+
+
+f <- function(obj){
+  geog <- geography(obj)
+  ests <- tibble(geog, 
+                 endyear=endyear(obj), 
+                 type="est",
+                 as_tibble(estimate(obj)))
+  se <- tibble(geog,
+               endyear=endyear(obj), 
+               type="se",
+               as_tibble(standard.error(obj)))
+  
+  df <- bind_rows(ests, se) %>%
+    pivot_longer(-all_of(c(names(geog), "endyear", "type")))
+}
+
+df <- f(obj)
+
+```
+
+
+# ACS RAW
+```{r acs_raw}
+
+
+```
+
+
+
 # WHY DO YOUNG PEOPLE COME TO A RURAL AREA?
 
 # HOW DO IMPORTANT CHARACTERISTICS OF THE CAMBRIDGE AREA COMPARE AND CHANGE OVER TIME?
+
+# ZIP CODES
+```{r}
+library(tigris)
+library(ggmap)
+options(tigris_use_cache = TRUE)
+
+Tooele       <- c('84074','84029')
+NEUtahCo     <- c('84003', '84004', '84042', '84062')
+NWUtahCounty <- c('84005','84013','84043','84045')
+utah_zips <- bind_rows(
+  tibble(area = "Tooele", zip = Tooele),
+  tibble(area = "NEUtahCo", zip = NEUtahCo),
+  tibble(area = "NWUtahCounty", zip = NWUtahCounty)
+)
+
+zips_sf <- zctas(cb = T, starts_with = "84", class = "sf") %>%
+  select(zip = ZCTA5CE10, geometry)
+
+head(zips_sf)
+#> Simple feature collection with 6 features and 1 field
+#> geometry type:  MULTIPOLYGON
+#> dimension:      XY
+#> bbox:           xmin: -114.0504 ymin: 37.60461 xmax: -109.0485 ymax: 41.79228
+#> epsg (SRID):    4269
+#> proj4string:    +proj=longlat +datum=NAD83 +no_defs
+#>       zip                       geometry
+#> 37  84023 MULTIPOLYGON (((-109.5799 4...
+#> 270 84631 MULTIPOLYGON (((-112.5315 3...
+#> 271 84334 MULTIPOLYGON (((-112.1608 4...
+#> 272 84714 MULTIPOLYGON (((-113.93 37....
+#> 705 84728 MULTIPOLYGON (((-114.0495 3...
+#> 706 84083 MULTIPOLYGON (((-114.0437 4...
+#> 
+utah_sf <- zips_sf %>%
+  inner_join(utah_zips, by = "zip")
+head(utah_sf)
+
+ggmap_show_api_key()
+ggmap_hide_api_key()
+
+
+#43.0278499,-73.3841795
+basemap <- get_map(location = c(lon=-111.9, lat= 40.7), zoom = 9)
+
+ggmap(basemap) +
+  geom_sf(aes(fill = zip), data = utah_sf, inherit.aes = F, size = 0, alpha = 0.6) +
+  coord_sf(ndiscr = F) +
+  theme(legend.position = "none")
+
+#43.0278499,-73.3841795
+lat <- 43.0278499
+lon <- -73.3841795
+
+Tooele       <- c('84074','84029')
+NEUtahCo     <- c('84003', '84004', '84042', '84062')
+NWUtahCounty <- c('84005','84013','84043','84045')
+
+camb_zips <- bind_rows(
+  tibble(area = "12816", zip = "12816"),
+  tibble(area = "12834", zip = "12834")
+)
+
+camb_zips_sf <- zctas(cb = TRUE, starts_with = "128", class = "sf") %>%
+  select(zip = ZCTA5CE10, geometry)
+
+camb_sf <- camb_zips_sf %>%
+  inner_join(camb_zips, by = "zip")
+head(camb_sf)
+
+camb_basemap5 <- get_map(location = c(lon=lon, lat= lat), 
+                        zoom = 5) # maptype = "hybrid", 
+
+camb_basemap10 <- get_map(location = c(lon=lon, lat= lat), 
+                          maptype = "hybrid",
+                          zoom = 10) # maptype = "hybrid", 
+
+
+camb_basemap11 <- get_map(location = c(lon=lon, lat= lat), 
+                        zoom = 11) # maptype = "hybrid", 
+
+camb_basemap12 <- get_map(location = c(lon=lon, lat= lat), 
+                        zoom = 12)
+
+
+camb_basemap10 <- get_map(location = c(lon=lon, lat= lat), 
+                          terrain = "roadmap", # hybrid, terrain, roadmap
+                          zoom = 10) # maptype = "hybrid", 
+
+camb_basemap10 <- get_map(location = c(lon=lon, lat= lat), 
+                          terrain = "terrain", # hybrid, terrain, roadmap
+                          zoom="auto", scale=2)
+
+camb_basemap <- camb_basemap10 
+ggmap(camb_basemap) +
+  geom_sf(aes(fill = zip), data = camb_sf, 
+          inherit.aes = FALSE, size = 0, alpha = 0.6) +
+  coord_sf(ndiscr = 100,
+           xlim=c(-73.65, -73.25),
+           ylim=c(42.9, 43.25)) +
+  # scale_x_continuous(name=NULL, breaks=NULL, labels=NULL) +
+  # scale_y_continuous(name=NULL, breaks=NULL, labels=NULL) +
+  legend_notitle +
+  ggtitle("Zip code boundaries in Cambridge area") + 
+  theme(axis.line = element_line(color = NA)) + 
+  xlab("") + ylab("")
+
+get_map("houston, texas")
+get_map("cambridge, new york") %>%
+  ggmap()
+
+lat <- 43.0278499
+lon <- -73.3841795
+get_map(location = c(lon=lon, lat= lat), 
+        terrain = "roadmap", # hybrid, terrain, roadmap
+        maprange=TRUE,
+        zoom="auto", scale=2) %>%
+  ggmap() +
+  geom_sf(aes(fill = zip), data = camb_sf, 
+          inherit.aes = FALSE, size = 0, alpha = 0.2) +
+  coord_sf(ndiscr = 100,
+           xlim=c(-73.65, -73.25),
+           ylim=c(42.9, 43.25)) +
+  theme_void() + 
+  ggtitle("Zip code boundaries in Cambridge area") +
+  theme(
+    plot.title = element_text(colour = "blue"), 
+    panel.border = element_rect(colour = "grey", fill=NA, size=2)
+    ) +
+  legend_notitle
+
+chi_bb <- c(
+  left = -87.936287,
+  bottom = 41.679835,
+  right = -87.447052,
+  top = 42.000835
+)
+
+chicago_stamen <- get_stamenmap(
+  bbox = chi_bb,
+  zoom = 11
+)
+
+ggmap(chicago_stamen)
+
+# camb bounding box
+camb_bb <- c(
+  left = -73.65,
+  bottom = 42.9,
+  right = -73.25,
+  top = 43.25
+)
+camb_stamen <- get_stamenmap(bbox = camb_bb, zoom = 13)
+camb_stamen <- get_stamenmap(
+  bbox = camb_bb
+)
+# get_stamenmap(bbox = camb_bb, zoom = 13, maptype="terrain-labels") %>%
+get_map(location=camb_bb, source="osm", maptype = "hybrid") %>%  
+  ggmap() +
+  geom_sf(aes(fill = zip), data = camb_sf, 
+          inherit.aes = FALSE, size = 0, alpha = 0.2) +
+  # coord_sf(ndiscr = 100,
+  #          xlim=c(-73.65, -73.25),
+  #          ylim=c(42.9, 43.25)) +
+  theme_void() + 
+  ggtitle("Zip code boundaries in Cambridge area") +
+  theme(
+    plot.title = element_text(colour = "blue"), 
+    panel.border = element_rect(colour = "grey", fill=NA, size=2)
+    ) +
+  legend_notitle
+
+  # theme(axis.line = element_blank(),
+  #       axis.text = element_blank(),
+  #       axis.ticks = element_blank(),
+  #       plot.margin = unit(c(0, 0, -1, -1), 'lines')) +
+  # xlab('') +
+  # ylab('')
+
+
+# bounding box
+left_bottom <- c(43.005063, -73.440002)
+right_top <- c(43.060715, -73.336668)
+(map <- get_map(c(left = left_bottom[1], bottom = left_bottom[2],
+                  right = right_top[1], top = right_top[2])))
+
+(map <- get_map(c(left = left_bottom[2], bottom = left_bottom[1],
+                  right = right_top[2], top = right_top[1]),
+                maptype="watercolor"))
+ggmap(map)
+
+
+map <- get_googlemap("Montpellier, France", zoom = 8, maptype = "terrain")
+ # Plot it
+ggmap(map) + 
+  theme_void() + 
+  ggtitle("terrain") + 
+  theme(
+    plot.title = element_text(colour = "orange"), 
+    panel.border = element_rect(colour = "grey", fill=NA, size=2)
+  )
+
+
+big_streets <- getbb("Asheville United States")%>%
+  opq()%>%
+  add_osm_feature(key = "highway", 
+                  value = c("motorway", "primary", "motorway_link", "primary_link")) %>%
+  osmdata_sf()
+
+big_streets
+
+med_streets <- getbb("Asheville United States")%>%
+  opq()%>%
+  add_osm_feature(key = "highway", 
+                  value = c("secondary", "tertiary", "secondary_link", "tertiary_link")) %>%
+  osmdata_sf()
+
+
+small_streets <- getbb("Asheville United States") %>%
+  opq()%>%
+  add_osm_feature(key = "highway", 
+                  value = c("residential", "living_street",
+                            "unclassified",
+                            "service", "footway"
+                  )) %>%
+  osmdata_sf()
+
+river <- getbb("Asheville United States")%>%
+  opq()%>%
+  add_osm_feature(key = "waterway", value = "river") %>%
+  osmdata_sf()
+
+railway <- getbb("Asheville United States") %>%
+  opq()%>%
+  add_osm_feature(key = "railway", value="rail") %>%
+  osmdata_sf()
+
+# http://joshuamccrain.com/tutorials/maps/streets_tutorial.html
+cbb <- getbb("Cambridge New York")
+# camb bounding box
+camb_bb <- c(
+  left = -73.65,
+  bottom = 42.9,
+  right = -73.25,
+  top = 43.25
+)
+
+big_streets <- camb_bb %>%
+  opq()%>%
+  add_osm_feature(key = "highway", 
+                  value = c("motorway", "primary", "motorway_link", "primary_link")) %>%
+  osmdata_sf()
+
+big_streets
+
+med_streets <- camb_bb %>%
+  opq()%>%
+  add_osm_feature(key = "highway", 
+                  value = c("secondary", "tertiary", "secondary_link", "tertiary_link")) %>%
+  osmdata_sf()
+
+ggplot() +
+  geom_sf(data = big_streets$osm_lines,
+          inherit.aes = FALSE,
+          color = "black") +
+  geom_sf(data = med_streets$osm_lines,
+          inherit.aes = FALSE,
+          color = "black")
+
+# http://gis.ny.gov/civil-boundaries/
+# http://gis.ny.gov/gisdata/inventories/details.cfm?DSID=927
+map('county', 'new jersey')
+map_data("county", "iowa")
+map_data("village", "new york")
+
+require(rgdal)
+require(ggplot2)
+fn <- file.path(tempdir(), "GBR_adm_gdb.zip", fsep = "\\")
+download.file("http://biogeo.ucdavis.edu/data/gadm2.8/shp/GBR_adm_shp.zip", fn)
+utils::unzip(fn, exdir = tempdir())
+shp <- readOGR(dsn = file.path(tempdir(), "GBR_adm1.shp"), stringsAsFactors = F)
+shp <- readOGR(here::here("map_data", "NYS_Civil_Boundaries.shp", "Villages.shp"), stringsAsFactors = FALSE)
+head(shp)
+count(shp, NAME)
+shp@data$NAME
+shp2 <- subset(shp, NAME=="Cambridge")
+
+camb_bb <- c(
+  left = -73.65,
+  bottom = 42.9,
+  right = -73.25,
+  top = 43.25
+)
+
+get_map(location=camb_bb, source="osm", maptype = "hybrid") %>%  
+  ggmap() +
+  geom_sf(aes(fill = zip), data = camb_sf, 
+          inherit.aes = FALSE, size = 0, alpha = 0.2)  +
+  geom_polygon(data = shp2, aes(x = long, y = lat, group = group), colour = "black", fill = NA)
+
+ggplot() + 
+  geom_polygon(data = shp2, aes(x = long, y = lat, group = group), colour = "black", fill = NA)
+
+
+scale_x_continuous( limits = c( -95.5 , -95.3 ) , expand = c( 0 , 0 ) )+
+scale_y_continuous( limits = c( 29.6 , 29.8 ) , expand = c( 0 , 0 ) )
+
+
+library(sf)
+vlg_path <- here::here("map_data", "NYS_Civil_Boundaries.shp", "Villages.shp")
+vlg_sf <- st_read(vlg_path)
+vlg_sf
+subset(vlg_sf, NAME=="Cambridge")
+camb_bb
+xmin <- -73.65; xmax <- -73.25
+ymin <- 42.90; ymax <- 43.25
+# the bound box
+tibble(long=c(xmin, xmin, xmax, xmax),
+       lat=c(ymin, ymax, ymin, ymax)) %>%
+  ggplot(aes(x = long, y = lat)) +
+  geom_sf(data=vlg_sf)
+  geom_polygon()
+  
+vlg_sf %>%
+  filter(NAME == "Cambbridge") %>%
+  ggplot() +
+  geom_sf(fill="blue") + 
+  coord_sf() +
+  scale_x_continuous(limits=c(xmin, xmax)) +
+  scale_y_continuous(limits=c(ymin, ymax))
+  scale_fill_manual(values=clrs) +
+  theme_map()
+  
+basemap <- get_map(location = c(lon=-111.9, lat= 40.7), zoom = 9)
+basemap <- get_map(location = camb_bb)
+ggmap(basemap) +
+  layer_spatial(vlg_sf) 
+  geom_sf(data=vlg_sf)
+  
+  
+
+us_counties(states = "NY") %>%
+  dplyr::select(-13) %>%
+  ggplot() + 
+  geom_sf(aes(fill="blue"))  + 
+  coord_sf()
+
+library(ggspatial)
+library(sf)
+ggplot() +
+  layer_spatial(sf::st_bbox(camb_bb))
+
+st_bbox(c(xmin = camb_bb["left"], xmax = camb_bb["right"],
+          ymax = camb_bb["top"], ymin = camb_bb["bottom"]),
+        crs = st_crs(4326))
+
+a <- st_bbox(c(xmin = 16.1, xmax = 16.6, ymax = 48.6, ymin = 47.9), crs = st_crs(4326))
+str(a)
+
+load_longlake_data()
+longlake_waterdf # is a simple features object
+a <- st_bbox(longlake_waterdf)
+a
+ #    xmin      ymin      xmax      ymax 
+ # 409949.5 5083315.6  412606.5 5087084.0 
+ggplot() +
+  layer_spatial(sf::st_bbox(longlake_waterdf)) +
+  layer_spatial(longlake_depthdf) 
+
+library(OpenStreetMap)
+# define upleft lowright as lat, lon
+# camb_bb
+upleft <- c(43.25, -73.65)
+lowright <- c(42.90, -73.25)
+ggplot() +
+  openmap(c(LAT2,LON1), c(LAT1,LON2), zoom = NULL,
+               type = c("osm", "stamen-toner", "stamen-terrain","stamen-watercolor", "esri","esri-topo")[6],
+               mergeTiles = TRUE)
+  
+
+```
+
+```{r}
+# https://cran.r-project.org/web/packages/osmdata/vignettes/osmdata.html
+# https://wiki.openstreetmap.org/wiki/Category:Keys
+# All overpass queries begin with a bounding box, defined in osmdata with the function opq():
+
+# The overpass API only accepts simple rectangular bounding boxes, and so data requested with a bounding polygon will actually be all data within the corresponding rectangular bounding box, but such data may be subsequently trimmed to within the polygon with the trim_osmdata() function, demonstrated in the code immediately below.
+
+# usual format: 
+# bbox = left,bottom,right,top
+# bbox = min Longitude , min Latitude , max Longitude , max Latitude 
+# ie xmin, ymin, xmax, ymax
+
+q <- opq(bbox = c(51.1, 0.1, 51.2, 0.2))
+# The following sub-section provides more detail on bounding boxes. Following the initial opq() call, osmdata queries are built by adding one or more ‘features,’ which are specified in terms of key-value pairs. For example, all paths, ways, and roads are designated in OSM with key=highway, so that a query all motorways in greater London (UK) can be constructed as follows:
+q <- opq(bbox = 'greater london uk') %>%
+    add_osm_feature(key = 'highway', value = 'motorway')
+
+bb <- getbb ('london uk', format_out = 'polygon')
+x <- opq(bbox = bb) %>%
+    add_osm_feature(key = 'highway', value = 'motorway') %>%
+    osmdata_sf () %>%
+    trim_osmdata (bb)
+
+# osmdata_sf() returns OSM data in Simple Features (SF) format, defined by the
+# Open Geospatial Consortium, and implemented in the R package sf. This package
+# provides a direct interface to the C++ Graphical Data Abstraction Library
+# (GDAL) which also includes a so-called ‘driver’ for OSM data. This means that
+# OSM data may also be read directly with sf, rather than using osmdata. In this
+# case, data must first be saved to disk, which can be readily achieved using
+# osmdata_xml() described above, or through downloading directly from the
+# overpass interactive query builder.
+
+opq(bbox = 'Trentham, Australia') %>%
+    add_osm_feature(key = 'name') %>%
+    # osmdata_xml(filename = 'trentham.osm')
+    osmdata_xml(filename = here::here("map_data", 'trentham.osm'))
+
+# The GDAL drivers used by sf can only load single ‘layers’ of features, for
+# example, points, lines, or polygons. In contrast, osmdata loads all features
+# simultaneously:
+sf::st_read(here::here("map_data", 'trentham.osm'), layer = 'points')
+sf::st_read(here::here("map_data", 'trentham.osm'), layer = 'lines')
+sf::st_read(here::here("map_data", 'trentham.osm'), layer = 'polygons')
+
+# The GDAL drivers used by sf can only load single ‘layers’ of features, for
+# example, points, lines, or polygons. In contrast, osmdata loads all features
+# simultaneously:
+(a <- osmdata_sf(q, here::here("map_data", 'trentham.osm')))
+names(a$osm_points)
+names(osmdata_sf(q, 'trentham.osm')$osm_points)
+# IMPORTANT!!
+# https://www.liamdbailey.com/post/building-maps-using-openstreetmap-content/
+# The first step is to specify the area within which we want to search for
+# OpenStreetMap features. We can specify the latitude and longitude limits
+# manually, but you can also use the getbb() function to return the limits of a
+# particular place (e.g. a city).
+getbb(place_name = "Greater Melbourne, Australia")
+melb_bb <- getbb(place_name = "Greater Melbourne, Australia")
+melb_bb
+
+##     min   max
+## x 144.4 146.2
+## y -38.5 -37.4
+
+# didn't work; altneratively
+# ie xmin, ymin, xmax, ymax
+melb_bb2 <- matrix(data=c(144.6, 146.2,
+                          -38.5, -37.4), 
+                   ncol=2, byrow=TRUE,
+                   dimnames=list(c("x", "y"), c("min", "max")))
+melb_bb2
+melb_bb <- melb_bb2
+
+make_bb <- function(xmin, ymin, xmax, ymax){
+  matrix(data=c(xmin, xmax, ymin, ymax), 
+         ncol=2, byrow=TRUE,
+         dimnames=list(c("x", "y"), c("min", "max")))
+}
+make_bb(144.6, -38.5, 146.2, -37.4)
+
+# define queries
+# query railway lines
+melb_query_line <- opq(bbox = melb_bb2, timeout = 120) %>% 
+  add_osm_feature(key = 'route', value = 'train')
+
+melb_query_station <- opq(bbox = melb_bb2, timeout = 120) %>% 
+  add_osm_feature(key = 'railway', value = 'station')
+
+melbourne_trainline <- melb_query_line %>% 
+  osmdata_sf()
+
+melbourne_station <- melb_query_station %>% 
+  osmdata_sf()
+
+melbourne_trainline
+
+melbourne_trainline_lines <- melbourne_trainline$osm_lines
+melbourne_station_points  <- melbourne_station$osm_points
+
+ggplot() +
+  geom_sf(data = melbourne_trainline_lines, size = 1, colour = "black") +
+  geom_sf(data = melbourne_station_points, size = 1, shape = 21, colour = "black", fill = "dark grey") +
+  theme_void()
+
+# Although we queried within the greater Melbourne area, the lines and polygons
+# can extend outside this bounding box. We can deal with this a number of ways.
+# Here we’ll use a combination of trim_osmdata() from within osmdata to clip our
+# lines and the coord_sf() function to adjust the limits of plot to match the
+# bounding box of Melbourne we’ve been using.
+
+# melb_bb_poly <- getbb(place_name = "Melbourne, Australia",
+#                       format_out = "sf_polygon")
+
+# create the polygon (my workaround)
+xmin <- 144.6; ymin <- -38.5; xmax <- 146.3; ymax <- -37.4
+Poly_Coord_df = data.frame(lon=c(xmin, xmax), lat=c(ymin, ymax))
+melb_bb_poly = Poly_Coord_df %>% 
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) 
+
+melbourne_trainline_trim <- melbourne_trainline %>% 
+  #Use exclude = FALSE to include lines that partially overlap our boundaries
+  trim_osmdata(bb_poly = melb_bb_poly, exclude = FALSE)
+
+melbourne_station_trim <- melbourne_station %>% 
+  trim_osmdata(bb_poly = melb_bb_poly, exclude = FALSE)
+
+melbourne_trainline_lines <- melbourne_trainline_trim$osm_lines
+melbourne_station_points  <- melbourne_station_trim$osm_points
+
+ggplot() +
+  geom_sf(data = melbourne_trainline_lines, size = 1, colour = "black") +
+  geom_sf(data = melbourne_station_points, size = 1, shape = 21, colour = "black", fill = "dark grey") +
+  theme_void() +
+  coord_sf(xlim = melb_bb[1, ], ylim = melb_bb[2, ])
+
+#For each station, determine the distance to all train lines
+min_dist <- sf::st_distance(melbourne_station_points,
+                            melbourne_trainline_lines) %>% 
+  #Determine the minimum distance for each station
+  apply(MARGIN = 1, FUN = min)
+
+melbourne_station_points_subset <- melbourne_station_points %>% 
+  dplyr::mutate(dist = min_dist) %>% 
+  dplyr::filter(dist <= 1000)
+  
+ggplot() +
+  geom_sf(data = melbourne_trainline_lines, size = 1, colour = "black") +
+  geom_sf(data = melbourne_station_points_subset, size = 1, shape = 21,
+          colour = "black", fill = "dark grey") +
+  theme_void() +
+  coord_sf(xlim = melb_bb[1, ], ylim = melb_bb[2, ])
+
+bass_strait <- opq(bbox = melb_bb, timeout = 120) %>% 
+  add_osm_feature(key = 'natural', value = 'strait') %>% 
+  add_osm_feature(key = "name", value = "Bass Strait", value_exact = FALSE) %>%
+  osmdata_sf()
+
+bass_strait_polygon <- bass_strait$osm_multipolygons
+
+yarra <- opq(bbox = melb_bb, timeout = 120) %>% 
+  add_osm_feature(key = 'waterway', value = 'river') %>% 
+  add_osm_feature(key = "name", value = "Yarra River", value_exact = FALSE) %>%
+  osmdata_sf()
+
+yarra_line <- yarra$osm_multilines
+
+ggplot() +
+  geom_sf(data = bass_strait_polygon, fill = "blue", colour = NA) +
+  geom_sf(data = yarra_line, colour = "blue", size = 1.5) +
+  geom_sf(data = melbourne_trainline_lines, size = 1, colour = "gray") +
+  geom_sf(data = melbourne_station_points_subset, size = 2, shape = 21,
+          colour = "black", fill = "dark grey") +
+  theme_void() +
+  coord_sf(xlim = melb_bb[1, ], ylim = melb_bb[2, ])
+
+
+```
+
+
+
+```{r}
+library(USAboundaries)
+data(package="USAboundaries")
+us_zipcodes() %>% filter(zipcode==12816)
+us_zipcodes() %>% filter(zipcode %in% c(12816, 12834))
+us_cities() %>% filter(state_abbr=="NY", county_name=="Washington")
+
+# ny data
+ny1 <- nytroll %>%
+  filter(stabbr=="NY", date==max(date))
+# create nyc records
+# 36000 New York
+# 36005 Bronx
+# 36047 Kings
+# 36061 New York
+# 36081 Queens
+# 36085 Richmond
+nyc <- tribble(
+  ~fips, ~county,
+  "36000", "New York",
+  "36005", "Bronx",
+  "36047", "Kings",
+  "36061", "New York",
+  "36081", "Queens",
+  "36085", "Richmond") %>%
+  mutate(cap100k=ny1$cap100k[ny1$fips=="36998"])
+nybase <- bind_rows(ny1, nyc)
+
+nydata <- us_counties(states = "NY") %>%
+  dplyr::select(-13) %>%  # state_name is 9 and 13, so delete second as duplicated and unnecessary
+  left_join(nybase %>%
+              dplyr::select(geoid=fips, cap100k),
+            by="geoid")
+
+# ggplot(nydata) + 
+#   geom_sf() + 
+#   coord_sf()
+
+nydata %>%
+  mutate(f=cut(cap100k, seq(0, 100, 10))) %>%
+  count(f)
+# good cuts look like 40-80 bt 10, 80-100, > 200
+nydata %>% mutate(f=cut(cap100k, seq(0, 100, 10))) %>% filter(is.na(f))
+
+# brewer.pal.info
+# clrs <- c(brewer.pal(5, "Paired"), "black")
+clrs <- brewer.pal(7, "RdBu") %>% rev()
+
+p <- nydata %>%
+  mutate(f=cut(cap100k, c(seq(30, 80, 10), 100, Inf))) %>%
+  ggplot() + 
+  geom_sf(aes(fill=f)) + 
+  coord_sf() +
+  scale_fill_manual(values=clrs) +
+  theme_map() +
+  geom_sf_text(aes(label = name), colour="black", size=2) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+  theme(legend.position = "right") +
+  ggtitle("Covid-9 cases per 100,000 population",
+          subtitle=paste0("Most recent 7-day average as reported on ", format(today(), "%B %d, %Y"))) +
+  theme(legend.position = c(.85, .4)) +
+  legend_notitle
+p
+
+ggsave(plot=p, filename=here::here("results", "nyco_map.png"), width=10, height=6.5, units="in")
+```
+
