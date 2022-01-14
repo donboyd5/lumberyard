@@ -14,6 +14,7 @@ library(fredr)
 library(btools)
 library(tidycensus)
 library(archive)
+library(arrow)
 
 # graphics
 library(scales)
@@ -24,6 +25,7 @@ library(ggrepel)
 library(ggbreak)
 
 # locations ----------------------------------------------------------------
+dacssf <- r"(E:\data\acs\sf\)"
 dny2009 <- r"(E:\data\acs\sf\2009_5year\ny\)"
 dny2014 <- r"(E:\data\acs\sf\2014_5year\ny\)"
 dny2019 <- r"(E:\data\acs\sf\2019_5year\ny\)"
@@ -31,12 +33,91 @@ dny2019 <- r"(E:\data\acs\sf\2019_5year\ny\)"
 # constants ----------------------------------------------------------------
 
 # notes ----------------------------------------------------------------
-# vroom(con, col_names=FALSE, 
-#     col_types=cols(X1="c", X2="c", X3="c", X4="c", X5="c", X6="c",
-#                    .default=col_double()))
+
+# SUMLEVEL CODESs: save as rds ----------------------------------------------------------
+# https://www.census.gov/programs-surveys/geography/technical-documentation/naming-convention/cartographic-boundary-file/carto-boundary-summary-level.html
+# https://www.census.gov/programs-surveys/geography/guidance/geo-identifiers.html
+# https://mcdc.missouri.edu/geography/sumlevs/more-about-sumlevels.html
+# https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/new-york.html
+
+# "place" is an incorporated city or town, or a census designated place, which
+# is a census-defined entity that has no legal definition but is used as a unit
+# for data reporting
 
 
-# functions ----------------------------------------------------------------
+sumlevels1 <- read_fwf(
+"
+020 Region
+030 Division
+040 State
+050 State-County
+060 State-County-County Subdivision
+067 State-County-County Subdivision-Subminor Civil Division
+070 State-County-County Subdivision-Place Remainder (or part) DISCONTINUED
+140 State-County-Census Tract
+150 State-County-Census Tract-Block Group
+160 State-Place
+170 State-Consolidated City
+230 State-Alaska Native Regional Corporation
+250 American Indian Area/Alaska Native Area/Hawaiian Home Land
+251 American Indian Area-Tribal Subdivision/Remainder
+252 American Indian Area/Alaska Native Area (Reservation or Statistical Entity Only)
+254 American Indian Area (Off-Reservation Trust Land Only)/Hawaiian Home Land
+256 American Indian Area-Tribal Census Tract
+258 American Indian Area-Tribal Census Tract-Tribal Block Group
+310 Metropolitan Statistical Area/Micropolitan Statistical Area
+314 Metropolitan Statistical Area-Metropolitan Division
+330 Combined Statistical Area
+332 Combined Statistical Area-Metropolitan Statistical Area/Micropolitan Statistical Area
+335 Combined New England City and Town Area
+337 Combined New England City and Town Area-New England City and Town Area
+350 New England City and Town Area
+352 New England City and Town Area-State-Principal City
+355 New England City and Town Area (NECTA)-NECTA Division
+361 State-New England City and Town Area-Principal City
+500 State-Congressional District (111th)
+610 State-State Legislative District (Upper Chamber)
+620 State-State Legislative District (Lower Chamber)
+700 State-County-Voting District/Remainder
+860 5-Digit ZIP code Tabulation Area
+950 State-School District (Elementary)/Remainder
+960 State-School District (Secondary)/Remainder
+970 State-School District (Unified)/Remainder
+", fwf_cols(sumlevel=c(1, 3), geotype=c(5, 1000))
+)
+
+unknown_codes <- c(080, 155, 260, 269, 270, 280, 283, 311, 312, 313, 315, 316, 320, 321, 322, 323, 324, 331, 333, 340, 341, 410, 430, 510, 550, 612, 622, 795)
+unknown <- tibble(sumlevel=unknown_codes, geotype="unknown") %>%
+  mutate(sumlevel=str_pad(sumlevel, width=3, side="left", pad="0"))
+
+sumlevels <- sumlevels1 %>%
+  bind_rows(unknown) %>%
+  mutate(temp=as.integer(sumlevel),
+         sgeotype=case_when(temp %in% c(20, 30, 40) ~ str_to_lower(geotype),
+                            temp == 50 ~ "county",
+                            temp == 60 ~ "cosub",
+                            temp == 70 ~ "coplace", # includes NY single-
+                            temp == 140 ~ "tract",
+                            temp == 150 ~ "blockgroup",
+                            temp == 160 ~ "place",
+                            temp == 170 ~ "concit",
+                            temp == 310 ~ "msamicro",
+                            temp == 314 ~ "msametro",
+                            temp == 330 ~ "csa",
+                            temp == 350 ~ "necta",
+                            temp == 860 ~ "zcta",
+                            temp == 950 ~ "sdelem",
+                            temp == 960 ~ "sdsecond",
+                            temp == 970 ~ "sdusd",
+                            temp %in% unknown_codes ~ "unknown",
+                            TRUE ~ "other")) %>%
+  select(-temp)
+count(sumlevels, sgeotype, geotype)
+saveRDS(sumlevels, paste0(dacssf, "sumlevels.rds"))
+count(sumlevels, sgeotype, geotype)
+
+# DATA: save as parquet ----------------------------------------------
+#.. function to get data for a year ----
 f1 <- function(year){
   zpath <- paste0(r"(E:\data\acs\sf\)", year, r"(_5year\ny\NewYork_All_Geographies_Not_Tracts_Block_Groups.zip)")
   print(zpath)
@@ -48,8 +129,9 @@ f1 <- function(year){
     # print(fname)
     # on.exit(close(con))
     con <- archive_read(zpath, fname)
+    # column 5 is sequence, 6 is logrecno -- we want them to be integer
     vroom(con, col_names=FALSE, 
-          col_types=cols(X1="c", X2="c", X3="c", X4="c", X5="c", X6="c",
+          col_types=cols(X1="c", X2="c", X3="c", X4="c", X5="i", X6="i",
                          .default=col_double()))
   }
   # g1(read_files$Name[1])
@@ -57,9 +139,9 @@ f1 <- function(year){
   df
 }
 
-# prepare data for each year ----------------------------------------------
 
-year <- 2009 # 2009 2014 2019
+# repeat for each year
+year <- 2019 # 2009 2014 2019
 df <- f1(year)
 glimpse(df)
 ht(df)
@@ -88,7 +170,7 @@ test1 <- read_parquet(paste0(d,  "em", year, "5ny.parquet"),
   filter(as.integer(sequence)==2)
 
 
-# prepare geo definition files --------------------------------------------
+# GEO DEFINITIONS: save as rds  --------------------------------------------
 sumlevels <- readRDS(paste0(d, "sumlevels.rds"))
 
 #.. get 2009 first because it has a different file structure ----
@@ -104,7 +186,7 @@ fcols <- fwf_cols(stabbr = c(7, 8),
                   sumlevel = c(9, 11),
                   component = c(12, 13),
                   logrecno = c(14, 20),
-                  geoid = c(179, 200),
+                  geoid = c(179, 206),
                   geoname=c(219, 1218))
 con <- archive_read(zpath, fname)
 df2009 <- read_fwf(con, fcols, col_types="cccicc") %>%
@@ -149,9 +231,277 @@ saveRDS(df2019, paste0(dny2019, "geo2019ny.rds"))
 
 
 #.. create a combined geo file ----
+df2009 <- readRDS(paste0(dny2009, "geo2009ny.rds"))
+df2014 <- readRDS(paste0(dny2014, "geo2014ny.rds"))
+df2019 <- readRDS(paste0(dny2019, "geo2019ny.rds"))
+sumlevels <- readRDS(paste0(dacssf, "sumlevels.rds"))
+
 geoall1 <- bind_rows(df2009, df2014, df2019)
+glimpse(geoall1)
+ht(geoall1)
+
+geoall2 <- geoall1 %>%
+  left_join(sumlevels, by="sumlevel") %>%
+  # create short names - not ideal, ok for now
+  mutate(sgeoname=str_extract_before_first(geoname, ","))
+
+# create a unique name that does not vary across years
+# previously I verified that geoids are unique within year
+geoall3 <- geoall2 %>%
+  arrange(geoid, year) %>%
+  group_by(geoid) %>%
+  mutate(usgeoname=last(sgeoname), # unique short geoname
+         namechange=length(unique(sgeoname)) > 1) %>%
+  ungroup
+saveRDS(geoall3, paste0(dacssf, "geoall.rds"))
+
+ht(geoall3)
+count(geoall3, namechange)
+tmp <- geoall3 %>%
+  filter(namechange) %>%
+  ht(21)
+
+tmp <- geoall3 %>% filter(str_detect(geoname, "Albany city"))
+tmp <- geoall3 %>% filter(str_detect(geoname, "Argyle village"))
+tmp <- geoall3 %>% filter(str_detect(geoname, "Cambridge"),
+                          !str_detect(geoname, "ract"))
+
+tmp <- geoall3 %>% filter(str_detect(sumlevel, "155"),
+                          str_detect(geoname, "Washington"))
+
+tmp <- geoall3 %>% filter(str_detect(sumlevel, "070"),
+                          str_detect(geoname, "Washington County"))
+
+# NY info
+# county code if exists is pos 10-12 of geoid
+# cities: sumlevel 060 (if don't cross boundaries?), DO have county code
+# villages: sumlevel 160, geotype State-Place, do NOT have a county code!
+# towns: sumlevel 060, geotype State-County-County Subdivision, DO have county code
 
 
+count(geoall3, sgeotype)
+count(geoall3 %>% filter(is.na(sgeotype)), sumlevel, geotype)
+geoall3 %>%
+  filter(namechange, sgeotype=="county")
+
+tmp <- geoall3 %>%
+  filter(namechange, sgeotype=="cosub")
+
+tmp <- geoall3 %>%
+  filter(namechange, sgeotype=="place") # note that places do not have a county code
+
+
+# TABLES, SEQUENCES, VARIABLES: save as rds ----
+
+getseq <- function(fname, year, td, flist){
+  num <- str_extract(fname, "[[:digit:]]+") %>% as.integer()
+  fpath <- file.path(td, fname)
+  df <- read_excel(fpath)
+  
+  df2 <- df %>%
+    mutate(sequence=!!num) %>%
+    select(-c(FILEID, FILETYPE, STUSAB, SEQUENCE, CHARITER, LOGRECNO)) %>%
+    pivot_longer(-c(sequence), values_to = "vdescription") %>%
+    separate(name, into=c("table", "vnum")) %>%
+    mutate(xvarnum=row_number(), vnum=as.integer(vnum),  year=!!year) %>%
+    select(year, table, sequence, xvarnum, vnum, vdescription)
+  df2
+}
+
+wrapper <- function(year){
+  dir <- paste0(r"(E:\data\acs\sf\)", year, r"(_5year\)")
+  zfname <- paste0(year, r"(_5yr_Summary_FileTemplates.zip)")
+  zpath <- paste0(dir, zfname)
+  
+  print(zpath)
+  # the temporary directory persists within an R session so delete all before proceeding
+  unlink(td, recursive=TRUE) 
+  td <- tempdir()
+  unzip(zpath, exdir = td, junkpaths = TRUE)
+  flist <- str_subset(list.files(td), coll("seq", ignore_case = TRUE))
+  
+  # df <- map_dfr(1:length(flist), getseq, year, td, flist)
+  df <- map_dfr(flist, getseq, year, td)
+  closeAllConnections()
+  df
+}
+
+vars2009 <- wrapper(2009)
+vars2014 <- wrapper(2014)
+vars2019 <- wrapper(2019)
+
+varsall <- bind_rows(vars2009, vars2014, vars2019) %>%
+  mutate(vname=paste0(table, "_", str_pad(vnum, width = 3, side="left", pad="0")))
+comment(varsall) <- "Variable names and associated tables and sequences"
+glimpse(varsall)
+ht(varsall)
+saveRDS(varsall, paste0(dacssf, "varsall.rds"))
+
+
+tabseq <- varsall %>%
+  select(year, table, sequence, xvarnum) %>%
+  arrange(year, table, sequence, xvarnum) %>%
+  group_by(year, table) %>%
+  mutate(ntabvars=n(), 
+         vfirst=first(xvarnum), 
+         vlast=last(xvarnum),
+         nseq=length(unique(sequence))) %>%
+  group_by(year, table, sequence) %>%
+  summarise(ntabvars=first(ntabvars),
+            vfirst=first(vfirst),
+            vlast=first(vlast),
+            nseq=first(nseq),
+            nseqvars=n(), 
+            seqvfirst=first(xvarnum),
+            seqvlast=last(xvarnum),
+            .groups="drop")
+comment(tabseq) <- "Tables, sequences in which they are located, and positions within sequences"
+ht(tabseq)
+saveRDS(tabseq, paste0(dacssf, "tabseq.rds"))
+
+tabseq %>%
+  filter(ntabvars != nseqvars) 
+tabseq %>%
+  filter(ntabvars != nseqvars, year==2019) 
+
+tmp <- tabseq %>% filter(table=="B05002", year==2009)
+tmp <- varsall %>% filter(table=="B05002", year==2009)
+
+# DATA RETRIEVAL TOOLS ----
+#.. get all lookup information ----
+geoall <- readRDS(paste0(dacssf, "geoall.rds"))
+sumlevels <- readRDS(paste0(dacssf, "sumlevels.rds"))
+tabseq <- readRDS(paste0(dacssf, "tabseq.rds"))
+varsall <- readRDS(paste0(dacssf, "varsall.rds"))
+
+idvars <- c("fileid", "filetype", "stusab", "chariter", "sequence", "logrecno")
+
+#.. decide upon tables ----
+# "E:\\data\\acs\\sf\\"
+# look especially at the table shells
+# B01002 MEDIAN AGE BY SEX
+# B01003 TOTAL POPULATION
+
+tabs <- c("B01002", "B01003")
+
+# get just one table at a time
+tab <- "B01002"
+locations <- tabseq %>%
+  filter(table == tab) %>%
+  arrange(table, year, sequence)
+locations
+
+#.. decide upon geographies ----
+sgeotypes <- c("state", "county", "place")
+counties <- c("Saratoga", "Warren", "Washington")
+geoids <- geoall %>%
+  filter(sgeotype %in% sgeotypes) %>%
+  filter(!(sgeotype=="county" & !str_detect_any(sgeoname, counties)))
+
+geoids %>%
+  select(year, sumlevel, logrecno, geoid, sgeoname, sgeotype)
+
+
+#.. define retrieval function(s) ----
+ds2009 <- open_dataset(paste0(dny2009, "em20095ny.parquet"), 
+                   partitioning = c("sequence", "logrecno"))
+
+ds2014 <- open_dataset(paste0(dny2014, "em20145ny.parquet"), 
+                       partitioning = c("sequence", "logrecno"))
+
+ds2019 <- open_dataset(paste0(dny2019, "em20195ny.parquet"), 
+                       partitioning = c("sequence", "logrecno"))
+
+#.. get data ----
+seq2009 <- locations %>% filter(year==2009) %>% .$sequence
+lrn2009 <- geoids %>%
+  filter(year==2009) %>%
+  .$logrecno
+
+djb <- ds2009 %>%
+  filter(as.integer(sequence) %in% seq2009,
+         as.integer(logrecno) %in% lrn2009) %>%
+  select(any_of(c(idvars, "x156", "x157", "x158"))) %>%
+  as_tibble() %>%
+  mutate(logrecno=as.integer(logrecno)) %>%
+  left_join(geoids %>%
+              filter(year==2009),
+            by="logrecno")
+
+
+djb <- ds %>%
+  filter(as.integer(sequence)==2) %>%
+  select(c(idvars, "x100", "x101", "x102")) %>%
+  as_tibble()
+
+
+
+#.. junk ----
+tmp <- geoall3 %>% filter(str_detect(geoname, "Albany city"))
+tmp <- geoall3 %>% filter(str_detect(geoname, "Argyle village"))
+tmp <- geoall3 %>% filter(str_detect(geoname, "Cambridge"),
+                          !str_detect(geoname, "ract"))
+
+tmp <- geoall3 %>% filter(str_detect(sumlevel, "155"),
+                          str_detect(geoname, "Washington"))
+
+tmp <- geoall3 %>% filter(str_detect(sumlevel, "070"),
+                          str_detect(geoname, "Washington County"))
+
+# NY info
+# county code if exists is pos 10-12 of geoid
+# cities: sumlevel 060 (if don't cross boundaries?), DO have county code
+# villages: sumlevel 160, geotype State-Place, do NOT have a county code!
+# towns: sumlevel 060, geotype State-County-County Subdivision, DO have county code
+
+
+
+# OLD ----
+#.. failed attempt usinmg lookup tables ----
+path2009 <- paste0(dacssf, "2009_5year/",  "Sequence_Number_and_Table_Number_Lookup.xls")
+path2014 <- paste0(dacssf, "2014_5year/",  "ACS_5yr_Seq_Table_Number_Lookup.xls")
+path2019 <- paste0(dacssf, "2019_5year/",  "ACS_5yr_Seq_Table_Number_Lookup.xlsx")
+# read_lines(path, n_max=5)
+vars20091 <- read_excel(path2009)
+vars20141 <- read_excel(path2014)
+vars20191 <- read_excel(path2019)
+
+names(vars20091)
+names(vars20141)
+names(vars20191)
+vnames <- c("fileid", "table", "sequence", "line", "start", "ncellstab", "ncellsseq", "name", "subject")
+
+varsall1 <- bind_rows(vars20091 %>%
+                        setNames(vnames) %>%
+                        mutate(year=2009),
+                      vars20141 %>%
+                        setNames(vnames) %>%
+                        mutate(year=2014),
+                      vars20191 %>%
+                        setNames(vnames) %>%
+                        mutate(year=2019))
+
+tmp <- varsall1 %>%
+  arrange(year, table, sequence, line)
+  # filter(table=="B26101", year==2019)
+
+varsall2 <- varsall1 %>%
+  select(-fileid) %>%
+  mutate(line=as.integer(line),
+         rectype=case_when(!is.na(ncellstab) ~ "tabname", 
+                           str_detect(tabname, "Universe") ~ "universe",
+                           TRUE ~ NA_character_))) %>%
+  fill(subject, .direction="down") %>%
+  group_by(sequence) %>%
+  mutate(row=row_number(), nseq=n()) %>%
+  group_by(table) %>%
+  mutate(ntable=n()) %>%
+  ungroup
+  
+varsall2 %>%
+  filter(year==2019, sequence==1) %>%
+  select(table, sequence, line, row, starts_with("n")) %>%
+  ht
 
 
 # I use Census names other than: stusab-->stabbr, name-->geoname 
@@ -178,43 +528,6 @@ geo20192 <- geo20191 %>%
 
 # prepare table and variable definition files  ----------------------------
 
-
-
-# get data ----------------------------------------------------------------
-# Tables are grouped numerically by the “root” of their Table ID, (for example,
-# Table B00001 is in sequence file 0001). • Tables with race iterations are
-# grouped in the same sequence.
-
-
-
-zpath1 <- r"(E:\data\acs\sf\2019_5year\NewYork_All_Geographies_Not_Tracts_Block_Groups.zip)"
-seq <- 1
-(fn <- paste0("e2019ny", str_pad(seq, width=4, side="left", pad="0"), "000.txt"))
-con1 <- archive_read(zpath1, fn)
-df1 <- read_csv(con1, col_names=FALSE)
-glimpse(df1)
-
-
-
-
-
-fn <- "g20195ny.csv"
-fne <- "e20195ny.txt"
-fnm <- "e20195ny.txt"
-
-geog <- read_csv(paste0(d, fn), col_names = FALSE)
-ests <- vroom(paste0(d, fne), col_names = FALSE)
-moe <- vroom(paste0(d, fne), col_names = FALSE)
-
-idvars <- c("fileid", "filetype", "stusab", "chariter", "sequence", "logrecno")
-vnames <- c(idvars, paste0("x", 1:(ncol(ests) - length(idvars))))
-length(vnames)
-em20195ny <- bind_rows(ests, moe) %>%
-  setNames(vnames)
-
-saveRDS(em20195ny, paste0(d, "em20195ny.rds"))
-
-write_parquet(em20195ny, paste0(d, "em20195ny.parquet"))
 
 
 cols <- c(idvars, )
@@ -252,172 +565,3 @@ seq <- tabvals$SEQUENCE
 fcol <- tabvals$firstcol + 6
 lcol <- tabvals$lastcol + 6
 (fn <- paste0("e2019ny", str_pad(seq, width=4, side="left", pad="0"), "000.txt"))
-
-
-zpath1 <- r"(E:\data\acs\sf\2019_5year\ny\NewYork_All_Geographies_Not_Tracts_Block_Groups.zip)"
-showConnections()
-closeAllConnections()
-on.exit(close(con1))
-con1 <- archive_read(zpath1, "e20195ny0001000.txt")
-df1 <- vroom(con1, col_names=FALSE)
-close(con1)
-glimpse(df1)
-
-zpath2 <- r"(E:\data\acs\sf\2019_5year\2019_5yr_Summary_FileTemplates.zip)"
-con2 <- archive_read(zpath2, "seq1.xlsx")
-df2 <- read_excel(con2)
-
-read_excel(path=unz(zpath2, filename= "seq1.xlsx"))
-
-f <- function(num){
-  zpath2 <- r"(E:\data\acs\sf\2019_5year\2019_5yr_Summary_FileTemplates.zip)"
-  fn <- paste0("seq", num, ".xlsx")
-  df <- read_excel(path=unzip(zpath2, files=fn))
-  df %>%
-    mutate(SEQUENCE=num) %>%
-    select(-c(FILEID, FILETYPE, STUSAB, CHARITER, LOGRECNO)) %>%
-    pivot_longer(-SEQUENCE) %>%
-    separate(name, into=c("table", "vnum")) %>%
-    mutate(vnum=as.integer(vnum))
-}
-df <- map_dfr(1:141, f)
-ns(df)
-saveRDS(df, here::here("data", "seqtables_20195.rds"))
-
-seqtab <- readRDS(here::here("data", "seqtables_20195.rds"))
-ns(seqtab)
-
-tmp <- seqtab %>%
-  mutate(rownum=row_number()) %>%
-  group_by(SEQUENCE) %>%
-  mutate(seqcolnum=row_number()) %>%  # the column number within the sequence
-  ungroup
-
-# this is the mapping we need to pick a table
-seqtabmap <- tmp %>%
-  group_by(SEQUENCE, table) %>%
-  summarise(ncols=n(), firstcol=min(seqcolnum), lastcol=max(seqcolnum),
-            .groups="drop")
-
-tab <- "B01002"
-tabvals <- seqtabmap %>% filter(table==tab)
-seq <- tabvals$SEQUENCE
-fcol <- tabvals$firstcol + 6
-lcol <- tabvals$lastcol + 6
-(fn <- paste0("e2019ny", str_pad(seq, width=4, side="left", pad="0"), "000.txt"))
-con1 <- archive_read(zpath1, fn)
-df1 <- read_csv(con1, col_names=FALSE) %>%
-  select(1:6, fcol:lcol)
-glimpse(df1)
-
-closeAllConnections()
-
-count(seqtab, SEQUENCE, table)
-count(seqtab, SEQUENCE, table) %>%
-  group_by(SEQUENCE) %>%
-  mutate(nvars=sum(n))
-
-df %>%
-  filter(table=="B01001")
-
-
-
-zpath1 <- r"(E:\data\acs\sf\2019_5year\NewYork_All_Geographies_Not_Tracts_Block_Groups.zip)"
-seq <- 1
-(fn <- paste0("e2019ny", str_pad(seq, width=4, side="left", pad="0"), "000.txt"))
-con1 <- archive_read(zpath1, fn)
-df1 <- read_csv(con1, col_names=FALSE)
-glimpse(df1)
-# FILEID	FILETYPE	STUSAB	CHARITER	SEQUENCE	LOGRECNO
-
-idvars <- c("fileid", "filetype", "stusab", "chariter", "sequence", "logrecno")
-vnames <- c(idvars, paste0("x", 1:(ncol(df1) - length(idvars))))
-length(vnames)
-vnames
-
-df2 <- df1 %>%
-  setNames(vnames)
-glimpse(df2)
-
-
-# save as rds: sumlevel codes ----------------------------------------------------------
-# https://www.census.gov/programs-surveys/geography/technical-documentation/naming-convention/cartographic-boundary-file/carto-boundary-summary-level.html
-sumlevels <- read_fwf(
-"
-020 Region
-030 Division
-040 State
-050 State-County
-060 State-County-County Subdivision
-067 State-County-County Subdivision-Subminor Civil Division
-140 State-County-Census Tract
-150 State-County-Census Tract-Block Group
-160 State-Place
-170 State-Consolidated City
-230 State-Alaska Native Regional Corporation
-250 American Indian Area/Alaska Native Area/Hawaiian Home Land
-251 American Indian Area-Tribal Subdivision/Remainder
-252 American Indian Area/Alaska Native Area (Reservation or Statistical Entity Only)
-254 American Indian Area (Off-Reservation Trust Land Only)/Hawaiian Home Land
-256 American Indian Area-Tribal Census Tract
-258 American Indian Area-Tribal Census Tract-Tribal Block Group
-310 Metropolitan Statistical Area/Micropolitan Statistical Area
-314 Metropolitan Statistical Area-Metropolitan Division
-330 Combined Statistical Area
-332 Combined Statistical Area-Metropolitan Statistical Area/Micropolitan Statistical Area
-335 Combined New England City and Town Area
-337 Combined New England City and Town Area-New England City and Town Area
-350 New England City and Town Area
-352 New England City and Town Area-State-Principal City
-355 New England City and Town Area (NECTA)-NECTA Division
-361 State-New England City and Town Area-Principal City
-500 State-Congressional District (111th)
-610 State-State Legislative District (Upper Chamber)
-620 State-State Legislative District (Lower Chamber)
-700 State-County-Voting District/Remainder
-860 5-Digit ZIP code Tabulation Area
-950 State-School District (Elementary)/Remainder
-960 State-School District (Secondary)/Remainder
-970 State-School District (Unified)/Remainder
-", fwf_cols(sumlevel=c(1, 3), geotype=c(5, 1000))
-)
-d <- r"(E:\data\acs\sf\)"
-saveRDS(sumlevels, paste0(d, "sumlevels.rds"))
-
-# Summary Level Code	Summary Level Name
-# 020 Region
-# 030 Division
-# 040 State
-# 050 State-County
-# 060 State-County-County Subdivision
-# 067 State-County-County Subdivision-Subminor Civil Division
-# 140 State-County-Census Tract
-# 150 State-County-Census Tract-Block Group
-# 160 State-Place
-# 170 State-Consolidated City
-# 230 State-Alaska Native Regional Corporation
-# 250 American Indian Area/Alaska Native Area/Hawaiian Home Land
-# 251 American Indian Area-Tribal Subdivision/Remainder
-# 252 American Indian Area/Alaska Native Area (Reservation or Statistical Entity Only)
-# 254 American Indian Area (Off-Reservation Trust Land Only)/Hawaiian Home Land
-# 256 American Indian Area-Tribal Census Tract
-# 258 American Indian Area-Tribal Census Tract-Tribal Block Group
-# 310 Metropolitan Statistical Area/Micropolitan Statistical Area
-# 314 Metropolitan Statistical Area-Metropolitan Division
-# 330 Combined Statistical Area
-# 332 Combined Statistical Area-Metropolitan Statistical Area/Micropolitan Statistical Area
-# 335 Combined New England City and Town Area
-# 337 Combined New England City and Town Area-New England City and Town Area
-# 350 New England City and Town Area
-# 352 New England City and Town Area-State-Principal City
-# 355 New England City and Town Area (NECTA)-NECTA Division
-# 361 State-New England City and Town Area-Principal City
-# 500 State-Congressional District (111th)
-# 610 State-State Legislative District (Upper Chamber)
-# 620 State-State Legislative District (Lower Chamber)
-# 700 State-County-Voting District/Remainder
-# 860 5-Digit ZIP code Tabulation Area
-# 950 State-School District (Elementary)/Remainder
-# 960 State-School District (Secondary)/Remainder
-# 970 State-School District (Unified)/Remainder
-
