@@ -11,6 +11,7 @@ results/
 *.out
 *.pdf
 *.rar
+*.rds
 *.xls*
 *.zip
 
