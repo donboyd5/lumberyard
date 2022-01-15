@@ -32,9 +32,13 @@ dny2019 <- r"(E:\data\acs\sf\2019_5year\ny\)"
 
 # constants ----------------------------------------------------------------
 
+
+# source files  ----------------------------------------------------------------
+source(here::here("r", "functions_utility.r"))
+
 # notes ----------------------------------------------------------------
 
-# SUMLEVEL CODESs: save as rds ----------------------------------------------------------
+# SUMLEVEL CODES: save as rds ----------------------------------------------------------
 # https://www.census.gov/programs-surveys/geography/technical-documentation/naming-convention/cartographic-boundary-file/carto-boundary-summary-level.html
 # https://www.census.gov/programs-surveys/geography/guidance/geo-identifiers.html
 # https://mcdc.missouri.edu/geography/sumlevs/more-about-sumlevels.html
@@ -374,33 +378,98 @@ sumlevels <- readRDS(paste0(dacssf, "sumlevels.rds"))
 tabseq <- readRDS(paste0(dacssf, "tabseq.rds"))
 varsall <- readRDS(paste0(dacssf, "varsall.rds"))
 
-idvars <- c("fileid", "filetype", "stusab", "chariter", "sequence", "logrecno")
-
 #.. decide upon tables ----
 # "E:\\data\\acs\\sf\\"
 # look especially at the table shells
 # B01002 MEDIAN AGE BY SEX
 # B01003 TOTAL POPULATION
 
-tabs <- c("B01002", "B01003")
-
-# get just one table at a time
-tab <- "B01002"
-locations <- tabseq %>%
-  filter(table == tab) %>%
-  arrange(table, year, sequence)
-locations
-
 #.. decide upon geographies ----
-sgeotypes <- c("state", "county", "place")
-counties <- c("Saratoga", "Warren", "Washington")
-geoids <- geoall %>%
-  filter(sgeotype %in% sgeotypes) %>%
-  filter(!(sgeotype=="county" & !str_detect_any(sgeoname, counties)))
+gpath <- r"(E:\data\acs\sf\2019_5year\boyd_acs_table_tools.xlsx)"
+geodf <- read_excel(gpath, sheet="geos_keep", skip=1)
+keepdf <- geodf %>% filter(keep==1)
 
-geoids %>%
-  select(year, sumlevel, logrecno, geoid, sgeoname, sgeotype)
+geokeep <- geoall %>%
+  filter(geoid %in% keepdf$geoid)
+(geoids <- unique(geokeep$geoid))
 
+# define tables, and table to get
+tabs <- c("B01002", "B01003")
+table <- "B01002"
+
+get_tabyear <- function(table, year){
+  # get a single table in a single year -----
+  # year <- 2019
+  # table <- "B01002"
+  
+  # find sequences and positions for the table in this year
+  seqpos <- tabseq %>%
+    filter(year==!!year, table == !!table) %>%
+    arrange(sequence) %>%
+    filter(row_number()==1) # for now don't worry about multiple-sequence tables
+  if(seqpos$nseq > 1) print("CAUTION: This table is in more than one sequence!")
+  
+  # define sequences and logical record numbers to get
+  seqs <- seqpos %>% .$sequence
+  logrecnos <- geokeep %>% filter(year==!!year) %>% .$logrecno
+  
+  idvars <- c("fileid", "filetype", "stusab", "chariter", "sequence", "logrecno")
+  xvars <- paste0("x", seqpos$vfirst:seqpos$vlast)
+  vars <- c(idvars, xvars)
+  
+  # choose and open dataset
+  dirs <- c(dny2009, dny2014, dny2019)
+  dir <- str_subset(dirs, as.character(year))
+  fn <- paste0("em", year, "5ny.parquet")
+  ds <- open_dataset(paste0(dir, fn), partitioning = c("sequence", "logrecno"))
+  
+  # get the data
+  df1 <- ds %>%
+    filter(sequence %in% seqs, logrecno %in% logrecnos) %>%
+    select(any_of(vars)) %>%
+    as_tibble()
+  
+  # append desired info
+  df2 <- df1 %>%
+    left_join(geokeep %>%
+                filter(year==!!year) %>%
+                select(logrecno, stabbr, sumlevel, geoid, geoname, sgeotype,
+                       usgeoname, namechange),
+              by="logrecno") %>%
+    mutate(year=!!year,
+           valtype=case_when(str_sub(filetype, 5, 5)=="e" ~ "est",
+                             str_sub(filetype, 5, 5)=="m" ~ "moe",
+                             TRUE ~ "ERROR")) %>%
+    select(-c(fileid, filetype, stusab, chariter)) %>%
+    select(year, valtype, stabbr, sumlevel, geoid, geoname, sgeotype, usgeoname, namechange,
+           sequence, logrecno,
+           starts_with("x"))
+  df2
+}
+
+# define function with inputs in either order so that we can map over either
+get_yeartab <- function(year, table){
+  get_tabyear(table, year)
+}
+
+tab <- "B01002"
+
+get_tabyear(tab, 2009)
+get_tabyear(tab, 2014)
+get_tabyear(tab, 2019)
+
+get_yeartab(2009, tab)
+get_yeartab(2014, tab)
+get_yeartab(2019, tab)
+
+
+
+
+
+fn <- paste0(dny2019, "em20195ny.parquet")
+df <- read_parquet(fn) %>%  # ,  col_select=c(all_of(vars))
+  filter(sequence==seqs, logrecno %in% logrecnos)
+count(df, filetype)
 
 #.. define retrieval function(s) ----
 ds2009 <- open_dataset(paste0(dny2009, "em20095ny.parquet"), 
@@ -413,18 +482,17 @@ ds2019 <- open_dataset(paste0(dny2019, "em20195ny.parquet"),
                        partitioning = c("sequence", "logrecno"))
 
 #.. get data ----
-seq2009 <- locations %>% filter(year==2009) %>% .$sequence
-lrn2009 <- geoids %>%
+seq2009 <- tab_locations %>% filter(year==2009) %>% .$sequence
+lrn2009 <- geokeep %>%
   filter(year==2009) %>%
   .$logrecno
 
 djb <- ds2009 %>%
-  filter(as.integer(sequence) %in% seq2009,
-         as.integer(logrecno) %in% lrn2009) %>%
+  filter(sequence %in% seq2009,
+         logrecno %in% lrn2009) %>%
   select(any_of(c(idvars, "x156", "x157", "x158"))) %>%
   as_tibble() %>%
-  mutate(logrecno=as.integer(logrecno)) %>%
-  left_join(geoids %>%
+  left_join(geokeep %>%
               filter(year==2009),
             by="logrecno")
 
