@@ -373,10 +373,18 @@ tmp <- varsall %>% filter(table=="B05002", year==2009)
 
 # DATA RETRIEVAL TOOLS ----
 #.. get all lookup information ----
+# we want these data frames in the environment
 geoall <- readRDS(paste0(dacssf, "geoall.rds"))
 sumlevels <- readRDS(paste0(dacssf, "sumlevels.rds"))
 tabseq <- readRDS(paste0(dacssf, "tabseq.rds"))
 varsall <- readRDS(paste0(dacssf, "varsall.rds"))
+
+ds2009 <- paste0(dny2009, "em20095ny.parquet")
+ds2014 <- paste0(dny2014, "em20145ny.parquet")
+ds2019 <- paste0(dny2019, "em20195ny.parquet")
+dspaths <- c(ds2009, ds2014, ds2019)
+
+source(here::here("r", "functions_acssf.r"), verbose = TRUE)
 
 #.. decide upon tables ----
 # "E:\\data\\acs\\sf\\"
@@ -395,63 +403,6 @@ geokeep <- geoall %>%
 
 # define tables, and table to get
 tabs <- c("B01002", "B01003")
-table <- "B01002"
-
-get_tabyear <- function(table, year){
-  # get a single table in a single year -----
-  # year <- 2019
-  # table <- "B01002"
-  
-  # find sequences and positions for the table in this year
-  seqpos <- tabseq %>%
-    filter(year==!!year, table == !!table) %>%
-    arrange(sequence) %>%
-    filter(row_number()==1) # for now don't worry about multiple-sequence tables
-  if(seqpos$nseq > 1) print("CAUTION: This table is in more than one sequence!")
-  
-  # define sequences and logical record numbers to get
-  seqs <- seqpos %>% .$sequence
-  logrecnos <- geokeep %>% filter(year==!!year) %>% .$logrecno
-  
-  idvars <- c("fileid", "filetype", "stusab", "chariter", "sequence", "logrecno")
-  xvars <- paste0("x", seqpos$vfirst:seqpos$vlast)
-  vars <- c(idvars, xvars)
-  
-  # choose and open dataset
-  dirs <- c(dny2009, dny2014, dny2019)
-  dir <- str_subset(dirs, as.character(year))
-  fn <- paste0("em", year, "5ny.parquet")
-  ds <- open_dataset(paste0(dir, fn), partitioning = c("sequence", "logrecno"))
-  
-  # get the data
-  df1 <- ds %>%
-    filter(sequence %in% seqs, logrecno %in% logrecnos) %>%
-    select(any_of(vars)) %>%
-    as_tibble()
-  
-  # append desired info
-  df2 <- df1 %>%
-    left_join(geokeep %>%
-                filter(year==!!year) %>%
-                select(logrecno, stabbr, sumlevel, geoid, geoname, sgeotype,
-                       usgeoname, namechange),
-              by="logrecno") %>%
-    mutate(year=!!year,
-           valtype=case_when(str_sub(filetype, 5, 5)=="e" ~ "est",
-                             str_sub(filetype, 5, 5)=="m" ~ "moe",
-                             TRUE ~ "ERROR")) %>%
-    select(-c(fileid, filetype, stusab, chariter)) %>%
-    select(year, valtype, stabbr, sumlevel, geoid, geoname, sgeotype, usgeoname, namechange,
-           sequence, logrecno,
-           starts_with("x"))
-  df2
-}
-
-# define function with inputs in either order so that we can map over either
-get_yeartab <- function(year, table){
-  get_tabyear(table, year)
-}
-
 tab <- "B01002"
 
 get_tabyear(tab, 2009)
@@ -463,8 +414,19 @@ get_yeartab(2014, tab)
 get_yeartab(2019, tab)
 
 
+df <- map_dfr(c(2009, 2014, 2019), get_yeartab, tab)
 
+df
+df2 <- df %>%
+  select(year, table, valtype, geoid, usgeoname, x156, x94) %>%
+  mutate(mdnage=ifelse(is.na(x156), x94, x156)) %>%
+  select(-x156, -x94)
+df2
 
+df3 <- df2 %>%
+  pivot_wider(names_from = c(valtype, year), values_from = mdnage) %>%
+  select(table, geoid, usgeoname, starts_with("est"), starts_with("moe"))
+df3
 
 fn <- paste0(dny2019, "em20195ny.parquet")
 df <- read_parquet(fn) %>%  # ,  col_select=c(all_of(vars))

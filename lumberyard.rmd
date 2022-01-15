@@ -717,7 +717,134 @@ count(acsdata, tableid, concept)
 
 # Population in and around the Village of Cambridge
 
+```{r load_info}
+#.. get all lookup information ----
+# we want these data frames in the environment
+geoall <- readRDS(paste0(dacssf, "geoall.rds"))
+sumlevels <- readRDS(paste0(dacssf, "sumlevels.rds"))
+tabseq <- readRDS(paste0(dacssf, "tabseq.rds"))
+varsall <- readRDS(paste0(dacssf, "varsall.rds"))
+
+ds2009 <- paste0(dny2009, "em20095ny.parquet")
+ds2014 <- paste0(dny2014, "em20145ny.parquet")
+ds2019 <- paste0(dny2019, "em20195ny.parquet")
+dspaths <- c(ds2009, ds2014, ds2019)
+
+source(here::here("r", "functions_acssf.r"), verbose = TRUE)
+
+```
+
+
+```{r define_geos}
+gpath <- r"(E:\data\acs\sf\2019_5year\boyd_acs_table_tools.xlsx)"
+geodf <- read_excel(gpath, sheet="geos_keep", skip=1)
+keepdf <- geodf %>% filter(keep==1)
+
+geokeep <- geoall %>%
+  filter(geoid %in% keepdf$geoid)
+geokeep
+
+```
+
+
+## Population size
+```{r}
+# get the fewest-variables table for total population
+# B01003	Total population
+
+df <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B01003")
+names(df)
+df2 <- df %>%
+  mutate(pop=ifelse(is.na(x186), x124, x186)) %>%
+  select(year, table, valtype, sgeotype, geoid, usgeoname, pop) %>%
+  pivot_wider(names_from = c(valtype, year), values_from = pop)
+df2
+
+tabdata <- df2 %>%
+  filter((sgeotype=="state" & geoid %in% c("04000US36", "04043US36")) |
+           (sgeotype=="county" & 
+              str_detect_any(usgeoname, c("Saratoga", "Warren", "Washington"))) |
+           (sgeotype=="cosub" & str_sub(geoid, 8, 12)=="36115") |  # towns
+           (sgeotype %in% c("place"))) %>% # villages
+  filter(!str_detect(usgeoname, "Schuy"),
+         !str_detect_any(usgeoname, c("Dresden", "Hampton", "Putnam"))) %>%
+  select(table, geoid, sgeotype, usgeoname, starts_with("est")) %>%
+  mutate(pch0914=est_2014 / est_2009 - 1,
+         pch1419=est_2019 / est_2014 - 1,
+         rowlab=factor(sgeotype,
+                       levels=c("state", "county", "place", "cosub"),
+                       labels=c("Statewide",
+                                "Selected counties",
+                                "Selected villages",
+                                "Selected towns"))) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+tab <- tabdata %>%
+  # group_by(rowlab) %>%
+  gt(groupname_col = "rowlab") %>%
+  cols_hide(c(table, geoid, sgeotype)) %>%
+  tab_header(
+    title = "Population in selected areas"
+      ) %>%
+  cols_label(usgeoname="",
+             est_2009="2009",
+             est_2014="2014",
+             est_2019="2019",
+             pch0914="2009 to 2014",
+             pch1419="2014 to 2019",
+             ) %>%
+  tab_spanner(
+    label = html("Percent change"),
+    columns = contains("pch")
+    ) %>%
+  cols_align(align="left", columns = usgeoname) %>%
+  fmt_number(
+    columns=starts_with("est"),
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = starts_with("pch"),
+    decimals = 1) %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      # cell_text(weight = "bold") # size = px(15), , font = "arial"
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=str_detect(usgeoname, "Cambridge")
+      )
+    ) 
+# %>%   tab_options(row_group.as_column=TRUE)
+# cells_row_groups()
+tab
+
+gtsave(tab, filename="tab_poptot.png", path=here::here("results"))
+write_csv(tabdata, file=here::here("results", "tab_poptot_data.csv"))
+
+```
+
+
 ## Age
+```{r median_age_raw}
+# tab <- "B01002"
+
+
+```
+
+
 ### Median age
 ```{r median_age}
 
@@ -1039,6 +1166,51 @@ write_csv(pdata, here::here("results", "fig_washco_popproj_data.csv"))
 
 
 # Housing in and around the Village of Cambridge
+
+## Property tax data
+```{r}
+# https://data.ny.gov/Government-Finance/Parcel-Counts-By-Type-By-Municipality-Beginning-Ro/tnwc-mx3q
+# levies
+# https://data.ny.gov/Government-Finance/Real-Property-Tax-Rates-Levy-Data-By-Municipality-/iq85-sdzs
+# http://data.ny.gov/d/e6pv-77bh
+# rars http://data.ny.gov/d/bsmp-6um6
+
+
+# other
+# NYSERDA
+# https://data.ny.gov/Energy-Environment/RSBS-MOM-Part-2-of-2-New-York-State-Residential-St/hc4z-b2p5
+
+# search
+# https://data.ny.gov/Government-Finance/Local-Data-Index/vgx8-sf6x
+
+parcels1 <- read_csv("https://data.ny.gov/api/views/tnwc-mx3q/rows.csv?accessType=DOWNLOAD&sorting=true")
+glimpse(parcels1)
+vnames <- c("rollyear", "swis", "muniname", "county",
+            "agricultural_100", "residential_200", "vacant_300", "commercial_400",
+            "recreation_500", "communityservice_600", "industrial_700",
+            "publicservice_800", "forest_900", "total")
+parcels2 <- parcels1 %>%
+  setNames(vnames) %>%
+  pivot_longer(-c(rollyear, swis, muniname, county)) %>%
+  separate(name, c("type", "code"), remove=FALSE) %>%
+  mutate(code=as.integer(code))
+
+parcels2 %>%
+  filter(rollyear==2020, str_detect(muniname, coll("Cambridge", ignore_case=TRUE)))
+
+parcels2 %>%
+  filter(str_detect(muniname, coll("Cambridge", ignore_case=TRUE))) %>%
+  filter(code %in% c(100, 200, 300, 400)) %>%
+  ggplot(aes(rollyear, value, colour=type)) +
+  geom_line() +
+  geom_point()
+
+
+
+```
+
+
+## TO DO
 
 ```{r gt_example}
 gt() %>%
