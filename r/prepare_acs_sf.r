@@ -294,6 +294,75 @@ tmp <- geoall3 %>%
 tmp <- geoall3 %>%
   filter(namechange, sgeotype=="place") # note that places do not have a county code
 
+# TABLE NAMES, DESCRIPTIONS, UNIVERSE, and SUBJECT:  save as rds ----
+# from the lookup file for each year
+get_table_description <- function(year){
+  fn2009 <- "Sequence_Number_and_Table_Number_Lookup.xls"  # 2009
+  fn2014 <- "ACS_5yr_Seq_Table_Number_Lookup.xls"  # 2014
+  fn2019 <- "ACS_5yr_Seq_Table_Number_Lookup.xlsx"  # 2019
+
+  d <- paste0(dacssf, year, "_5year/")
+
+  if(year==2009) {
+    fn <- fn2009
+    } else if(year==2014) {
+      fn <- fn2014
+      } else if(year==2019) fn <- fn2019
+  
+  tnd1 <- read_excel(paste0(d, fn))
+  
+  tnd2 <- tnd1 %>%
+    select(2, 6, 8, 9) %>%
+    setNames(c("table", "ncells", "tabtitle", "subject")) %>%
+    mutate(titlerec=!is.na(subject),
+           univrec=lag(titlerec)) %>%
+    filter(titlerec | univrec)
+  
+  tnd3 <- tnd2 %>%
+    group_by(table) %>%
+    summarise(universe=last(tabtitle), # MUST be BEFORE the "across" statement
+              across(c(ncells, tabtitle, subject), first),
+              .groups="drop") %>%
+    mutate(universe=str_remove(universe, "Universe:"),
+           universe=str_trim(universe),
+           universe=str_to_sentence(universe),
+           universe=str_replace(universe, "work at home", "work from home"), # 2019 change
+           universe=str_replace_all(universe, c(
+             "africa"="Africa",
+             "alaska"="Alaska",
+             "american"="American",
+             "asia"="Asia",
+             "english"="English",
+             "hawaiian"="Hawaian",
+             "hispan"="Hispan",
+             "indian"="Indian",
+             "island"="Island",
+             "latin"="Latin",
+             "native"="Native",
+             "pacific"="Pacific",
+             "puerto rico"="Puerto Rico",
+             "united states"="United States")),
+           ncells=str_extract_before_first(ncells, " ") %>% as.integer(),
+           tabtitle=str_to_title(tabtitle),
+           year=!!year) %>%
+    select(year, everything())
+  
+  tnd3
+  }
+
+# get_table_description(2019)
+
+tabdescribe <- map_dfr(c(2009, 2014, 2019), get_table_description)
+tabdescribe
+count(tabdescribe, year)
+count(tabdescribe, table)
+count(tabdescribe, table) %>% filter(n==3)
+count(tabdescribe, subject)
+sort(unique(tabdescribe$universe))
+tmp <- count(tabdescribe, universe, year)
+str_subset(unique(tabdescribe$universe), "home")
+saveRDS(tabdescribe, paste0(dacssf, "tabdescribe.rds"))
+
 
 # TABLES, SEQUENCES, VARIABLES: save as rds ----
 

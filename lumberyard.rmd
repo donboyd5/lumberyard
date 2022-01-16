@@ -724,6 +724,7 @@ geoall <- readRDS(paste0(dacssf, "geoall.rds"))
 sumlevels <- readRDS(paste0(dacssf, "sumlevels.rds"))
 tabseq <- readRDS(paste0(dacssf, "tabseq.rds"))
 varsall <- readRDS(paste0(dacssf, "varsall.rds"))
+tabdescribe <- readRDS(paste0(dacssf, "tabdescribe.rds"))
 
 ds2009 <- paste0(dny2009, "em20095ny.parquet")
 ds2014 <- paste0(dny2014, "em20145ny.parquet")
@@ -736,7 +737,7 @@ source(here::here("r", "functions_acssf.r"), verbose = TRUE)
 
 
 ```{r define_geos}
-gpath <- r"(E:\data\acs\sf\2019_5year\boyd_acs_table_tools.xlsx)"
+gpath <- r"(E:\data\acs\sf\boyd_acs_table_tools.xlsx)"
 geodf <- read_excel(gpath, sheet="geos_keep", skip=1)
 keepdf <- geodf %>% filter(keep==1)
 
@@ -744,55 +745,65 @@ geokeep <- geoall %>%
   filter(geoid %in% keepdf$geoid)
 geokeep
 
+subareas <- geokeep %>%
+  mutate(statekeep=sgeotype=="state" & geoid %in% c("04000US36", "04043US36"),
+         countykeep=sgeotype=="county" & 
+           str_detect_any(usgeoname, c("Saratoga", "Warren", "Washington")),
+         washcotown=sgeotype=="cosub" & str_sub(geoid, 8, 12)=="36115", # Washco towns
+         droptown=washcotown & str_detect_any(usgeoname, c("Dresden", "Hampton", "Putnam")),
+         townkeep=washcotown & !droptown,
+         villagekeep=sgeotype=="place" & !str_detect_any(usgeoname, "Schuy")) %>%
+  mutate(anykeep=statekeep | countykeep | townkeep | villagekeep) %>%
+  filter(anykeep) %>%
+  select(!contains("keep"))
+
 ```
 
 
-## Population size
-```{r}
-# get the fewest-variables table for total population
+```{r get_save_acs_tables}
+
+# .. population -- get the fewest-variables table for total population ----
 # B01003	Total population
+tab_B01003 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B01003")
+glimpse(tab_B01003)
+saveRDS(tab_B01003, here::here("data", "tab_B01003.rds"))
 
-df <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B01003")
-names(df)
-df2 <- df %>%
-  mutate(pop=ifelse(is.na(x186), x124, x186)) %>%
-  select(year, table, valtype, sgeotype, geoid, usgeoname, pop) %>%
-  pivot_wider(names_from = c(valtype, year), values_from = pop)
-df2
+#.. B01002	 		MEDIAN AGE BY SEX ----
+# B01002	 		Universe:  Total population
+# B01002	0.5		Median age --
+# B01002	1	B01002_001	Total:
+# B01002	2	B01002_002	Male
+# B01002	3	B01002_003	Female
+tab_B01002 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B01002")
+tab_B01002
+saveRDS(tab_B01002, here::here("data", "tab_B01002.rds"))
 
-tabdata <- df2 %>%
-  filter((sgeotype=="state" & geoid %in% c("04000US36", "04043US36")) |
-           (sgeotype=="county" & 
-              str_detect_any(usgeoname, c("Saratoga", "Warren", "Washington"))) |
-           (sgeotype=="cosub" & str_sub(geoid, 8, 12)=="36115") |  # towns
-           (sgeotype %in% c("place"))) %>% # villages
-  filter(!str_detect(usgeoname, "Schuy"),
-         !str_detect_any(usgeoname, c("Dresden", "Hampton", "Putnam"))) %>%
-  select(table, geoid, sgeotype, usgeoname, starts_with("est")) %>%
-  mutate(pch0914=est_2014 / est_2009 - 1,
-         pch1419=est_2019 / est_2014 - 1,
-         rowlab=factor(sgeotype,
-                       levels=c("state", "county", "place", "cosub"),
-                       labels=c("Statewide",
-                                "Selected counties",
-                                "Selected villages",
-                                "Selected towns"))) %>%
-  arrange(rowlab, usgeoname)
-tabdata
+```
 
-tab <- tabdata %>%
-  # group_by(rowlab) %>%
+```{r functions_acs_tables}
+get_rowlab <- function(sgeotype){
+  factor(sgeotype,
+         levels=c("state", "county", "place", "cosub"),
+         labels=c("Statewide",
+                  "Selected counties",
+                  "Selected villages",
+                  "Selected towns"))
+}
+
+fpch_table <- function(tabdata, .title, ydecimals=0){
+  tab <- tabdata %>%
   gt(groupname_col = "rowlab") %>%
-  cols_hide(c(table, geoid, sgeotype)) %>%
+  cols_hide(c(table, geoid, sgeotype, tabvarname)) %>%
   tab_header(
-    title = "Population in selected areas"
+    title = .title
       ) %>%
   cols_label(usgeoname="",
-             est_2009="2009",
-             est_2014="2014",
-             est_2019="2019",
-             pch0914="2009 to 2014",
-             pch1419="2014 to 2019",
+             y2009="2009",
+             y2014="2014",
+             y2019="2019",
+             pch0914=html("2009<br>to 2014"),
+             pch1419=html("2014<br>to 2019"),
+             pch0919=html("2009<br>to 2019"),
              ) %>%
   tab_spanner(
     label = html("Percent change"),
@@ -800,8 +811,8 @@ tab <- tabdata %>%
     ) %>%
   cols_align(align="left", columns = usgeoname) %>%
   fmt_number(
-    columns=starts_with("est"),
-    decimals=0
+    columns=starts_with("y"),
+    decimals=ydecimals
   ) %>%
   fmt_percent(
     columns = starts_with("pch"),
@@ -826,12 +837,41 @@ tab <- tabdata %>%
     locations = cells_body(
       rows=str_detect(usgeoname, "Cambridge")
       )
-    ) 
-# %>%   tab_options(row_group.as_column=TRUE)
-# cells_row_groups()
+    ) %>%
+  cols_width(
+    usgeoname ~ px(150),
+    starts_with("y") ~ px(100),
+    starts_with("pch") ~ px(100)
+  )
+  # %>%   tab_options(row_group.as_column=TRUE)
+  # cells_row_groups()
 tab
+}
 
-gtsave(tab, filename="tab_poptot.png", path=here::here("results"))
+
+```
+
+
+## Population size
+```{r}
+tab_B01003 <- readRDS(here::here("data", "tab_B01003.rds"))
+count(tab_B01003, tabvarname, vdescription)
+
+tabdata <- tab_B01003 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est") %>%
+  select(year, table, tabvarname, sgeotype, geoid, usgeoname, value) %>%
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(pch0914=y2014 / y2009 - 1,
+         pch1419=y2019 / y2014 - 1,
+         pch0919=y2019 / y2009 - 1,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fpch_table(tabdata, .title="Population in selected areas", ydecimals=0)
+gtsave(tab, filename="tab_poptot.png", path=here::here("results"), zoom=1, expand=10)
 write_csv(tabdata, file=here::here("results", "tab_poptot_data.csv"))
 
 ```
@@ -840,6 +880,83 @@ write_csv(tabdata, file=here::here("results", "tab_poptot_data.csv"))
 ## Age
 ```{r median_age_raw}
 # tab <- "B01002"
+tab_B01002 <- readRDS(here::here("data", "tab_B01002.rds"))
+
+glimpse(df)
+tab_B01002 <- df %>%
+  pivot_longer(starts_with("x"), names_to = "vname", values_to = "mdnage") %>%
+  filter(!is.na(mdnage)) %>%
+  mutate(vname=case_when(vname %in% c("x156", "x94") ~ "total",
+                         vname %in% c("x157", "x95") ~ "male",
+                         vname %in% c("x158", "x96") ~ "female")) %>%
+  select(year, table, vname, valtype, sgeotype, geoid, usgeoname, mdnage) 
+
+
+tabdata <- tab_B01002 %>%
+  filter(eval(key_subareas)) %>% 
+  filter(!str_detect(usgeoname, "Schuy"),
+         !str_detect_any(usgeoname, c("Dresden", "Hampton", "Putnam"))) %>%
+  filter(vname=="total", valtype=="est") %>%
+  select(year, table, geoid, sgeotype, usgeoname, mdnage) %>%
+  pivot_wider(names_from = year, names_prefix = "y", values_from = mdnage) %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         rowlab=factor(sgeotype,
+                       levels=c("state", "county", "place", "cosub"),
+                       labels=c("Statewide",
+                                "Selected counties",
+                                "Selected villages",
+                                "Selected towns"))) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+tab <- tabdata %>%
+  # group_by(rowlab) %>%
+  gt(groupname_col = "rowlab") %>%
+  cols_hide(c(table, geoid, sgeotype)) %>%
+  tab_header(
+    title = "Median age in selected areas"
+      ) %>%
+  cols_label(usgeoname="",
+             y2009="2009",
+             y2014="2014",
+             y2019="2019",
+             ch0914="2009 to 2014",
+             ch1419="2014 to 2019",
+             ) %>%
+  tab_spanner(
+    label = html("Change"),
+    columns = contains("ch")
+    ) %>%
+  cols_align(align="left", columns = usgeoname) %>%
+  fmt_number(
+    columns=c(starts_with("y"), starts_with("ch")),
+    decimals=1
+  ) %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      # cell_text(weight = "bold") # size = px(15), , font = "arial"
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=str_detect(usgeoname, "Cambridge")
+      )
+    ) 
+# %>%   tab_options(row_group.as_column=TRUE)
+# cells_row_groups()
+tab
 
 
 ```

@@ -4,12 +4,12 @@ get_tabyear <- function(table, year,
                         # they do not need to be passed
                         .tabseq=tabseq, 
                         .geokeep=geokeep,
+                        .tabdescribe=tabdescribe,
+                        .varsall=varsall,
                         .dspaths=dspaths){
   # get a single table in a single year -----
   # year <- 2019
   # table <- "B01002"
-  # this ASSUMES the following are in the environment
-  # dny2009, dny2014, dny2019
   
   # find sequences and positions for the table in this year
   seqpos <- .tabseq %>%
@@ -30,8 +30,14 @@ get_tabyear <- function(table, year,
   logrecnos <- .geokeep %>% filter(year==!!year) %>% .$logrecno
   
   idvars <- c("fileid", "filetype", "stusab", "chariter", "sequence", "logrecno")
-  xvars <- paste0("x", seqpos$vfirst:seqpos$vlast)
-  vars <- c(idvars, xvars)
+  
+  # make a data frame that has each xvar name, its number, and the table variable name
+  vardf <- tibble(xvar=paste0("x", seqpos$vfirst:seqpos$vlast),
+                  vnum=1:length(xvar),
+                  tabvarname=paste0(table, "_", str_pad(vnum, width=3, side="left", pad="0")))
+  # xvars <- paste0("x", seqpos$vfirst:seqpos$vlast)
+
+  vars <- c(idvars, vardf$xvar) # variables we will get from the data file
   
   # choose and open dataset
   dspath <- str_subset(.dspaths, as.character(year))
@@ -49,23 +55,33 @@ get_tabyear <- function(table, year,
     return()
   }
   
-  # append desired info
+  # make the file long, add vnum and table varnames
   df2 <- df1 %>%
+    mutate(year=!!year,
+           table=!!table,
+           stusab=str_to_upper(stusab),
+           valtype=case_when(str_sub(filetype, 5, 5)=="e" ~ "est",
+                             str_sub(filetype, 5, 5)=="m" ~ "moe",
+                             TRUE ~ "ERROR")) %>%
+    select(year, table, valtype, stabbr=stusab, logrecno, starts_with("x")) %>%
+    pivot_longer(starts_with("x"), names_to = "xvar") %>%
+    left_join(vardf, by = "xvar")
+  
+  # bring in table description and variable description
+  df3 <- df2 %>%
+    left_join(.tabdescribe, by = c("year", "table")) %>%
+    left_join(.varsall %>% select(year, tabvarname=vname, vdescription),
+              by=c("year", 'tabvarname'))
+  
+  # bring in geographic variables and get valtype (est or moe)
+  df4 <- df3 %>%
     left_join(.geokeep %>%
                 filter(year==!!year) %>%
                 select(logrecno, stabbr, sumlevel, geoid, geoname, sgeotype,
                        usgeoname, namechange),
-              by="logrecno") %>%
-    mutate(year=!!year,
-           table=!!table,
-           valtype=case_when(str_sub(filetype, 5, 5)=="e" ~ "est",
-                             str_sub(filetype, 5, 5)=="m" ~ "moe",
-                             TRUE ~ "ERROR")) %>%
-    select(-c(fileid, filetype, stusab, chariter)) %>%
-    select(year, table, valtype, stabbr, sumlevel, geoid, geoname, sgeotype, usgeoname, namechange,
-           sequence, logrecno,
-           starts_with("x"))
-  df2
+              by=c("logrecno", "stabbr")) %>%
+    relocate(c(xvar, vnum, tabvarname, value, vdescription), .after = last_col())
+  df4
 }
 
 # define function with inputs in either order so that we can map over either
@@ -74,6 +90,9 @@ get_yeartab <- function(year, table,
                         # they do not need to be passed
                         .tabseq=tabseq, 
                         .geokeep=geokeep,
+                        .tabdescribe=tabdescribe,
+                        .varsall=varsall,
                         .dspaths=dspaths){
-  get_tabyear(table, year, .tabseq, .geokeep, .dspaths)
+  get_tabyear(table, year, .tabseq, .geokeep, .tabdescribe, .varsall, .dspaths)
 }
+
