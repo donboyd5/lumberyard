@@ -38,7 +38,9 @@ library(RcppRoll)
 library(fredr)
 library(btools)
 library(tidycensus)
+library(fs)
 library(archive)
+library(arrow)
 
 # graphics
 library(scales)
@@ -78,12 +80,31 @@ library(rvest)
 # 
 # dj90 <- r"(E:\data\CA_j90/)"
 # dj90_all <- paste0(dj90, "data/allyears/")
+# dcenpop <- r"(E:\data\census_annpop\)"
+dcenpop <- r"(E:\data\census_annpop)"
+dpl <- r"(E:\data\census_redistricting)"
+
+dacssf <- r"(E:\data\acs\sf\)"
+dny2009 <- r"(E:\data\acs\sf\2009_5year\ny\)"
+dny2014 <- r"(E:\data\acs\sf\2014_5year\ny\)"
+dny2019 <- r"(E:\data\acs\sf\2019_5year\ny\)"
+
+
 
 ```
 
 
 ```{r functions_utility}
 source(here::here("r", "functions_utility.r"))
+
+get_rowlab <- function(sgeotype){
+  factor(sgeotype,
+         levels=c("state", "county", "place", "cosub"),
+         labels=c("Statewide",
+                  "Selected counties",
+                  "Selected villages",
+                  "Selected towns"))
+}
 
 
 ```
@@ -103,7 +124,7 @@ newyork_state <- "36"
 #.. api keys ----
 source("~/R_projects/api_keys.r", verbose=TRUE)
 fredr_set_key(fred_apikey)
-gmaps_apikey <- "AIzaSyDFWxscpciI2HDziBJ3CIhqxKWEqbaD6VM"
+# gmaps_apikey <- "AIzaSyDFWxscpciI2HDziBJ3CIhqxKWEqbaD6VM"
 ## Not run: 
 # census_api_key(census_apikey, install = TRUE, overwrite=TRUE)
 # First time, reload your environment so you can use the key without restarting R.
@@ -117,8 +138,11 @@ caption_left <- theme(plot.caption = element_text(hjust = 0))
 
 #.. source notes ----
 source_acs <- "American Community Survey 5-year summary file"
-source_padcoproj <- "Cornell Program on Applied Demographics, County Projections 2018 (https://pad.human.cornell.edu/counties/projections.cfm)"
+source_decennialpop <- "U.S. Census Bureau Decennial Census"
+source_cenpop <- "U.S. Census Bureau City and Town Population Estimates"
+# (https://www.census.gov/data/tables/time-series/demo/popest/2010s-total-cities-and-towns.html)
 source_hud <- "HUD Comprehensive Housing Affordability Strategy data, based on 2014-2018 ACS"
+source_padcoproj <- "Cornell Program on Applied Demographics, County Projections 2018 (https://pad.human.cornell.edu/counties/projections.cfm)"
 
 # https://pad.human.cornell.edu/schools/projections.cfm
 # https://www.nyeducationdata.org/
@@ -471,6 +495,396 @@ saveRDS(acsdata, here::here("data", "acsdata.rds"))
 
 ```
 
+
+```{r ONETIME_CensusCityTown_pop}
+# https://community.rstudio.com/t/get-file-name-from-url/25505/4
+# https://fs.r-lib.org/reference/index.html
+# library(fs)
+# uplace %>%
+#   path_file() %>% 
+#   path_ext_remove()
+
+# https://www2.census.gov/programs-surveys/popest/technical-documentation/file-layouts/2010-2019/sub-est2019.pdf
+
+# 2020 and 2021 state-level births, deaths, migration
+# https://www2.census.gov/programs-surveys/popest/datasets/2020-2021/state/totals/NST-EST2021-alldata.csv
+
+# 2020 and 2021 state-level ests and changes
+# https://www2.census.gov/programs-surveys/popest/datasets/2020-2021/state/totals/NST-EST2021-popchg2020_2021.csv
+
+#..2010-2020 data csv format ----
+# 2010-2020 place-level ests
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/cities/SUB-EST2020_ALL.csv
+# 2010-2020 county-level ests
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/counties/totals/co-est2020.csv
+# 2010-2020 county-level ests plus births deaths migration
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/counties/totals/co-est2020-alldata.csv
+# 2010-2020 county-level housing estimates
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/housing/HU-EST2020_ALL.csv
+# US, states, and regions
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/national/totals/nst-est2020.csv
+# ... popests and changes
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/national/totals/nst-est2020-popchg2010-2020.csv
+# ... popests and births, deaths, migration
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/national/totals/nst-est2020-alldata.csv
+
+#.. vintage 2021 data info ---- December 21, 2021 states data, and national and
+#state components of change
+#https://www.census.gov/newsroom/press-releases/2021/2021-population-estimates.html
+#https://www.census.gov/programs-surveys/popest/data/tables.html 2020 county
+#data from redistricting files
+#https://www.census.gov/library/visualizations/interactive/2020-population-and-housing-state-data.html
+#https://www.census.gov/programs-surveys/decennial-census/about/rdo/summary-files.html#P1
+# The 2020 Census Redistricting Data (P.L. 94-171) Summary File data are
+# available for all 50 states, the District of Columbia, and the Commonwealth of
+# Puerto Rico through data.census.gov and FTP download (in the Legacy Format).
+# But they also appear to have county data (djb)
+#  Washington County, NY
+# 
+# Total population (2020): 61,302 
+# ----
+# Population Data
+# Total population (2020): 61,302
+# Total population (2010): 63,216
+# Numeric change (2010–2020): -1,914
+# Percent change (2010–2020): -3.0
+# from techdoc:
+# This product contains summary statistics on population and housing subjects. Population
+# counts for the total population and for the population 18 years and over are presented by race
+# and by Hispanic or Latino origin, and for the total group quarters population by major group
+# quarters type. The product includes one housing table showing occupancy status (occupied,
+# vacant). The official titles of the six tables are:
+# P1. Race
+# P2. Hispanic or Latino, and Not Hispanic or Latino by Race
+# P3. Race for the Population 18 Years and Over
+# P4. Hispanic or Latino, and Not Hispanic or Latino by Race for the Population 18 Years and
+# Over
+# P5. Group Quarters Population by Major Group Quarters Type
+# H1. Occupancy Status
+
+
+
+
+ubase <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/"
+ubase <- "# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/cities/"
+
+f <- function(url) download.file(url, file.path(dcenpop, path_file(url)), mode="wb")
+
+#.. all (?) as csv ----
+uallcsv <- "https://www2.census.gov/programs-surveys/popest/datasets/2010-2019/cities/totals/sub-est2019_all.csv"
+f(uallcsv)
+
+#.. population ----
+# comp means components of change
+ucounty <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/counties/totals/co-est2019-annres.xlsx"
+f(ucounty)
+ucocomp <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/counties/totals/co-est2019-comp.xlsx"
+f(ucocomp)
+
+# places, cities
+uplace <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/cities/totals/SUB-IP-EST2019-ANNRES.xlsx"
+f(uplace)
+
+umcdny <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/mcds/totals/SUB-MCD-EST2019-ANNRES-36.xlsx"
+f(umcdny)
+
+ucbsa <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/metro/totals/cbsa-met-est2019-annres.xlsx"
+f(ucbsa)
+ucbsacomp <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/metro/totals/cbsa-met-est2019-comp.xlsx"
+f(ucbsacomp)
+
+ucsa <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/metro/totals/csa-est2019-annres.xlsx"
+f(ucsa)
+ucsacomp <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/metro/totals/csa-est2019-comp.xlsx"
+f(ucsacomp)
+
+#.. housing ----
+usthousing <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/housing/totals/NST-EST2019-ANNHU.xlsx"
+f(usthousing)
+
+ucohousing <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2019/housing/totals/CO-EST2019-ANNHU.xlsx"
+f(ucohousing)
+
+```
+
+
+```{r popann_2020}
+
+# just estimates, not components of change:
+# US, states, and regions
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/national/totals/nst-est2020.csv
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/counties/totals/co-est2020.csv
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/cities/SUB-EST2020_ALL.csv
+
+# 2010-2020 county-level ests plus births deaths migration
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/counties/totals/co-est2020-alldata.csv
+# 2010-2020 county-level housing estimates
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/housing/HU-EST2020_ALL.csv
+
+dcenpop <- r"(E:\data\census_annpop)"
+ustate <- "https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/national/totals/nst-est2020.csv"
+ucounty <- "https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/counties/totals/co-est2020.csv"
+usubco <- "https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/cities/SUB-EST2020_ALL.csv"
+
+# dcenpop <- r"(E:\data\census_annpop\)"
+# nst-est2020.csv co-est2020.csv SUB-EST2020_ALL.csv HU-EST2020_ALL.csv
+popfiles <- c("nst-est2020.csv", "co-est2020.csv", "SUB-EST2020_ALL.csv") 
+
+f <- function(url) download.file(url, file.path(dcenpop, path_file(url)), mode="wb")
+f(ustate)
+f(ucounty)
+f(usubco)
+
+# combine files and clean
+f2 <- function(url, dcenpop){
+  df <- vroom(file.path(dcenpop, path_file(url)), col_types=cols(.default="c"))
+  df %>%
+    mutate(src=path_file(url))
+}
+df <- map_dfr(list(ustate, ucounty, usubco), f2, dcenpop)
+names(df)
+
+# use !! to unquote one variable or !!! to unquote a vector of variables inside
+# of arrange(). When you pass those columns, if they are bare, quote them using
+# quo() for one variable or quos() for a vector
+idvars <- quos(c(sumlev, region, division, state, 
+         county, place, cousub, concit, primgeo_flag, funcstat,
+         stname, ctyname, name))
+
+df2 <- df %>%
+  setNames(str_to_lower(names(.))) %>%
+  select(src, !!!idvars, everything()) %>%
+  # we want all pop variables to start with "pop" and end with the year
+  rename(popcensus2010=census2010pop,
+         popestimatesbase2010=estimatesbase2010,
+         popcensusestimate2020=popestimate042020) %>%
+  mutate(across(starts_with("pop"), as.numeric))
+
+count(df2, sumlev, src)
+names(df2)
+count(df2 %>% filter(is.na(name)), sumlev)
+
+# get rid of duplicate sumlev 040
+tmp <- df2 %>% 
+  filter(sumlev=="040") %>% 
+  mutate(name2=ifelse(is.na(stname), name, stname)) %>%
+  select(src, !!!idvars, name2, popcensus2010, popcensusestimate2020) %>%
+  arrange(name2, src)
+# nst-est2020.csv has PR, others don't; all pop numbers appear the same
+
+# get county names to put on file
+counties <- df2 %>%
+  filter(sumlev=="050", !is.na(ctyname)) %>%
+  select(state, county, ctyname) %>%
+  distinct()
+
+df3 <- df2 %>%
+  filter(!(sumlev=="040" & src != "nst-est2020.csv")) %>%
+  # fill in names
+  mutate(stname=ifelse(sumlev=="040", name, stname),
+         name=ifelse(sumlev=="050", ctyname, name)) %>%
+  select(-ctyname) %>%
+  left_join(counties, by=c("state", "county")) %>% # bring in ctyname
+  relocate(ctyname, .after=stname) %>%
+  # filter(state=="36")
+  # create geoid for NY records
+  mutate(sgeotype=case_when(state=="36" & sumlev=="040" ~ "state",
+                            state=="36" & sumlev=="050" ~ "county",
+                            state=="36" & sumlev=="061" ~ "cosub", # cities and towns
+                            state=="36" & sumlev=="157" ~ "place", # villages
+                            TRUE ~ NA_character_),
+         geoid=case_when(sgeotype=="state" ~   paste0("04000US", state),
+                         sgeotype=="county" ~  paste0("05000US", state, county),
+                         sgeotype=="cosub" ~   paste0("06000US", state, county, cousub),
+                         sgeotype=="place" ~   paste0("16000US", state, place)))
+names(df3)
+
+# create long file
+df4 <- df3 %>%
+  select(geoid, sumlev, sgeotype, state, stname, geoname=name,
+         county, place, cousub, concit, starts_with("pop")) %>%
+  pivot_longer(starts_with("pop")) %>%
+  mutate(esttype=case_when(str_detect(name, "popcensus") ~ "census",
+                           str_detect(name, "popestimatesbase") ~ "estsbase",
+                           str_detect(name, "popestimate") &
+                             !str_detect(name, "popestimatesbase") ~ "est"),
+         year=str_sub(name, -4, -1) %>% as.integer())
+
+ny <- df4 %>%
+  filter(state=="36")
+tmp <- ny %>% filter(str_detect(geoname, "Dexter"))
+
+saveRDS(df4, file.path(dcenpop, "popann2020.rds"))
+
+
+```
+
+
+
+```{r OLD_read_popann_and_xwalk}
+
+#.. read data ----
+# https://www.statsamerica.org/geography-tools.aspx
+dcenpop <- r"(E:\data\census_annpop\)"
+uallcsv <- "https://www2.census.gov/programs-surveys/popest/datasets/2010-2019/cities/totals/sub-est2019_all.csv"
+path_file(uallcsv)
+dfall1 <- read_csv(file.path(dcenpop, path_file(uallcsv)))
+glimpse(dfall1)
+names(dfall1)
+
+# why is CENSUS2010POP character?
+bad <- dfall1 %>%
+  mutate(rn=row_number()) %>%
+  filter(is.na(as.numeric(CENSUS2010POP))) %>%
+  select(SUMLEV:POPESTIMATE2010, rn)
+bad
+nrow(bad) # 430 rows
+
+count(dfall1, FUNCSTAT)
+# https://www.census.gov/library/reference/code-lists/functional-status-codes.html
+#   FUNCSTAT     n
+#   <chr>    <int>
+# 1 A        69600  active govt
+# 2 B           24
+# 3 C           62
+# 4 F        11195  fictitious entity to fill Census hierarchy, includes many types of areas
+# 5 G            1
+# 6 I          108  inactive govt with special purpose powers
+# 7 N           70
+# 8 S          374  statistical entity
+
+# clean up and make an rds file ----
+dfall2 <- dfall1 %>%
+  setNames(str_to_lower(names(.))) %>%
+  # we want all pop variables to start with "pop" and end with the year
+  rename(popcensus2010=census2010pop,
+         popestimatesbase2010=estimatesbase2010) %>%
+  mutate(popcensus2010=as.numeric(popcensus2010))
+
+# https://www.census.gov/programs-surveys/geography/technical-documentation/naming-convention/cartographic-boundary-file/carto-boundary-summary-level.html
+# https://www.census.gov/programs-surveys/geography/guidance/geo-identifiers.html
+# https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/new-york.html
+# https://mcdc.missouri.edu/geography/sumlevs/more-about-sumlevels.html
+# https://www2.census.gov/geo/docs/reference/
+
+# use the codes in the codes folder, not in the codes/files folder
+# https://www2.census.gov/geo/docs/reference/codes/national_county.txt
+# State,State ANSI,County ANSI,County Name,ANSI Cl
+# AL,01,001,Autauga County,H1
+
+# https://www2.census.gov/geo/docs/reference/codes/COUSUBlist.txt
+# STATE,STATEFP,COUNTYFP,COUNTYNAME,COUSUBFP,COUSUBNAME,FUNCSTAT
+# AL,01,001,Autauga County,90171,Autaugaville CCD,S
+
+# https://www2.census.gov/geo/docs/reference/codes/PLACElist.txt  note the | delimiter
+# STATE|STATEFP|PLACEFP|PLACENAME|TYPE|FUNCSTAT|COUNTY
+# AL|01|00100|Abanda CDP|Census Designated Place|S|Chambers County
+
+# https://www2.census.gov/geo/docs/reference/codes/SDlist.txt
+# STATE,STATEFP,LEA,SDNAME,TYPE
+# AL,01,00001,Fort Rucker School District,Unified
+
+# delimited files, names?, and delimiter
+# https://www2.census.gov/geo/docs/reference/codes/files/
+# [TXT]	national_county.txt	09-May-2014 08:12	92K	 no, ,
+# https://www2.census.gov/geo/docs/reference/codes/national_county.txt yes, ,
+# [TXT]	national_cousub.txt	09-May-2014 08:12	1.8M	 yes, ,
+# [TXT]	national_places.txt	09-May-2014 08:12	2.7M	    yes, |
+# [TXT]	national_schdist.txt	09-May-2014 08:12	739K	 yes, ,
+
+#   sumlev     n
+#   <chr>  <int>
+# 1 040       51  state
+# 2 050     3142  county
+# 3 061    21063  towns -- are 060 in geoid
+# 4 071    13839  city -- 070 in geoid
+# 5 157    23714  place (village) WITHIN COUNTY
+# 6 162    19502  place (village) county is 000, just like geoid
+# 7 170        8
+# 8 172      115
+# does not have sumlev 970 schooldistrict 
+
+# selected ACS codes
+# 04000US36,"New York"
+# 04001US36,"New York -- Urban"
+# 04043US36,"New York -- Rural"
+# 05000US36001,"Albany County, New York"
+# 05000US36115,"Washington County, New York"
+# 06000US3600101000,"Albany city, Albany County, New York",,,
+# 06000US3600106211,"Berne town, Albany County, New York",,,
+# 06000US3611511836,"Cambridge town, Washington County, New York"
+# 16000US3611825,"Cambridge village, New York"
+# 16000US3664771,"Salem CDP, New York"
+# 97000US3606210,"Cambridge Central School District, New York" NOT IN POPEST DATA
+
+# construct acs geoid -- investigate
+part <- "Albany city"
+part <- "Berne town"
+part <- "Cambridge"
+part <- "Salem"  # CDP or village does not seem to be in popest data
+dfall2 %>%
+  filter(str_detect(name, part), state=="36") %>%
+  select(sumlev:popcensus2010)
+count(dfall2, sumlev)
+
+
+# selected popest data
+# sumlev state county place cousub concit primgeo_flag funcstat name
+# 050    36    001    00000 00000  00000             0 A        Albany County
+# 061    36    001    00000 06211  00000             1 A        Berne town
+# 061    36    115    00000 11836  00000             0 A        Cambridge town
+
+# summary paste rules for NY based on sgeotype
+# state: 04000US36
+# county: 05000US36,county
+# cosub(town/city 061-->060): 06000US36,county,cousub 
+# place(village 162-->160): 16000US36,place
+
+
+dfall3 <- dfall2 %>%
+  mutate(sgeotype=case_when(state=="36" & sumlev=="040" ~ "state",
+                            state=="36" & sumlev=="050" ~ "county",
+                            state=="36" & sumlev=="061" ~ "cosub",
+                            state=="36" & sumlev=="162" ~ "place",
+                            TRUE ~ NA_character_),
+         geoid=case_when(sgeotype=="state" ~   paste0("04000US", state),
+                         sgeotype=="county" ~  paste0("05000US", state, county),
+                         sgeotype=="cosub" ~   paste0("06000US", state, county, cousub),
+                         sgeotype=="place" ~   paste0("16000US", state, place)))
+dfall3 %>% filter(state=="36")
+dfall3 %>% filter(state=="36", sgeotype=="state")
+tmp <- dfall3 %>% filter(state=="36", sgeotype=="county")
+tmp <- dfall3 %>% filter(state=="36", sgeotype=="cosub", county=="115")
+tmp <- dfall3 %>% filter(state=="36", sgeotype=="place")
+
+# The “GEO.ID” field contains 14-digit codes that identify the summary level of
+# data, the geographic component of the data and FIPS codes that uniquely
+# identify the data. For example, the 14-digit “GEO.ID” for Harris County, TX is
+# “0500000US48201” where “050” represents the summary level of the data, “0000”
+# represents the 2-digit geographic variant and the 2-digit geographic
+# component, “US” represents the United States, “48” represents the state of
+# Texas and “201” represents Harris County.
+
+# do final cleaning and save
+dfall4 <- dfall3 %>%
+  select(geoid, sumlev, sgeotype, state, stname, geoname=name,
+         county, place, cousub, concit, starts_with("pop")) %>%
+  pivot_longer(starts_with("pop")) %>%
+  mutate(esttype=case_when(str_detect(name, "popcensus") ~ "census",
+                           str_detect(name, "popestimatesbase") ~ "estsbase",
+                           str_detect(name, "popestimate") &
+                             !str_detect(name, "popestimatesbase") ~ "est"),
+         year=str_sub(name, -4, -1) %>% as.integer())
+
+ny <- dfall4 %>%
+  filter(state=="36")
+tmp <- ny %>% filter(str_detect(geoname, "Dexter"))
+
+saveRDS(dfall4, file.path(dcenpop, "popann.rds"))
+
+```
+
+
 ```{r ONETIME_pad_projections}
 # Cornell Washington County projections
 pad1 <- read_excel(here::here("data", "padprojections115.xlsx"))
@@ -499,7 +913,7 @@ pad3 %>%
   geom_line() +
   geom_point()
 
-saveRDS(pad3, here::here("popproj_pad_washco.rds"))
+saveRDS(pad3, here::here("data", "popproj_pad_washco.rds"))
 
 ```
 
@@ -703,16 +1117,59 @@ tmp %>%
 ```
 
 
+```{r irs_data}
+dmig <- r"()"
+ zpath <- paste0(r"(E:\data\acs\sf\)", year, r"(_5year\ny\NewYork_All_Geographies_Not_Tracts_Block_Groups.zip)")
+  print(zpath)
+  files <- unzip(zpath, list=TRUE)
+  read_files <- files %>%
+    filter(str_sub(Name, 1, 2) %in% c("e2", "m2"))
+
+```
+
 
 # DATA ANALYSIS
 ```{r load_data}
 uvacs <- readRDS(here::here("data", "uvacs.rds"))
 acsdata <- readRDS(here::here("data", "acsdata.rds"))
-popwash <- readRDS(here::here("popproj_pad_washco.rds"))
+popwash <- readRDS(here::here("data", "popproj_pad_washco.rds"))
+popannold <- readRDS(file.path(dcenpop, "popann.rds"))
+popann <- readRDS(file.path(dcenpop, "popann2020.rds"))
+census2020 <- readRDS(file.path(dpl, "census2020plny.rds"))
 
-count(acsdata, tableid, concept)
+# count(acsdata, tableid, concept)
+names(census2020)
+tmp <- census2020 %>%
+  filter(stusab=="NY", 
+         as.integer(sumlev) < 200, 
+         !sumlev %in% c("140", "150"),
+         !str_detect(name, "(part)")) %>%
+  select(sumlev, geoid, geocode, county, basename, name, pop100, hu100)
+count(tmp, sumlev)
+
+tmp2 <- tmp %>%
+  mutate(geoidold=geoid,
+         usgeoname=name)
+#         geoid=ifelse(sumlev %in% c("040", "050", "060"), paste0(sumlev, "00US", geocode), geoidold))
+
+
+pop2020 <- subareas %>%
+  left_join(tmp2 %>% select(-geoid), by="usgeoname") %>%
+  select(geoid, sgeotype, usgeoname, basename, name, pop100, hu100)
+
+
+tmp %>%
+  filter(str_detect(name, "White Creek"))
+tmp %>%
+  filter(str_detect(name, "Cambridge town"))
+
+subareas %>%
+  filter(str_detect(usgeoname, "White Creek"))
+
+
 
 ```
+
 
 
 # Population in and around the Village of Cambridge
@@ -760,10 +1217,20 @@ subareas <- geokeep %>%
 ```
 
 
+
+
 ```{r get_save_acs_tables}
+tabdescribe
+count(tabdescribe, subject)
+tmp <- tabdescribe %>% filter(subject=="Age-Sex", year==2019)
+count(tabdescribe %>% filter(table=="B01001"), year)
+
+tabdescribe %>% 
+  filter(table=="C24050", year==2019) %>%
+  select(tabtitle)
 
 # .. population -- get the fewest-variables table for total population ----
-# B01003	Total population
+#.. B01003	Total population ----
 tab_B01003 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B01003")
 glimpse(tab_B01003)
 saveRDS(tab_B01003, here::here("data", "tab_B01003.rds"))
@@ -778,17 +1245,98 @@ tab_B01002 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B01002")
 tab_B01002
 saveRDS(tab_B01002, here::here("data", "tab_B01002.rds"))
 
+#.. B01001 Sex By Age ----
+tab_B01001 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B01001")
+tab_B01001
+saveRDS(tab_B01001, here::here("data", "tab_B01001.rds"))
+
+#.. C24050 Industry By Occupation For The Civilian  Employed Population 16 Years And Over ----
+tab_C24050 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "C24050")
+tab_C24050
+saveRDS(tab_C24050, here::here("data", "tab_C24050.rds"))
+# tab_C24050 %>% filter(geoid=="16000US3611825", year==2019) %>% write_csv(here::here("data", "check.csv"))
+
+#.. C24060 OCCUPATION BY CLASS OF WORKER FOR THE CIVILIAN EMPLOYED POPULATION 16 YEARS AND OVER ----
+tab_C24060 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "C24060")
+tab_C24060
+saveRDS(tab_C24060, here::here("data", "tab_C24060.rds"))
+
+# C25004	 		VACANCY STATUS
+
+
 ```
 
-```{r functions_acs_tables}
-get_rowlab <- function(sgeotype){
-  factor(sgeotype,
-         levels=c("state", "county", "place", "cosub"),
-         labels=c("Statewide",
-                  "Selected counties",
-                  "Selected villages",
-                  "Selected towns"))
+```{r functions_census_acs_tables}
+fcenpop_table <- function(tabdata, .title){
+  fnote <- "NOTE: 2020 Decennial estimate for Greenwich village is considerably lower than previous Census Bureau annual estimates."
+  tab <- tabdata %>%
+  gt(groupname_col = "rowlab") %>%
+  cols_hide(c(stabbr, sgeotype)) %>%
+  tab_header(
+    title = .title
+      ) %>%
+  cols_label(usgeoname="",
+             pop2010="2010",
+             pop2020="2020",
+             change=html("change"),
+             pch=html("% change")
+             ) %>%
+  # tab_spanner(
+  #   label = html("Percent change"),
+  #   columns = contains("pch")
+  #   ) %>%
+  cols_align(align="left", columns = usgeoname) %>%
+  fmt_number(
+    columns=c(pop2010, pop2020, change),
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = pch,
+    decimals = 1) %>%
+  tab_source_note(paste0("Source: ", source_decennialpop, " (Redistricting file for 2020).")) %>%
+  tab_footnote(
+    footnote = fnote,
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      # cell_text(weight = "bold") # size = px(15), , font = "arial"
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=str_detect(usgeoname, "Cambridge")
+      )
+    ) %>%
+  cols_width(
+    usgeoname ~ pct(50),
+    everything() ~ pct(50)
+    ) %>%
+  tab_options(
+    table.width = pct(100)
+  )
+  # cols_width(
+  #   usgeoname ~ px(150),
+  #   starts_with("y") ~ px(100),
+  #   starts_with("pch") ~ px(100)
+  # )
+  # %>%   tab_options(row_group.as_column=TRUE)
+  # cells_row_groups()
+tab
 }
+
+tab <- fcenpop_table(tabdata, "Decennial census population in 2010 and 2020")
+tab
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_decennialpop.png", path=here::here("results"), zoom=1, expand=10)
+
 
 fpch_table <- function(tabdata, .title, ydecimals=0){
   tab <- tabdata %>%
@@ -849,11 +1397,231 @@ tab
 }
 
 
+fch_table <- function(tabdata, .title, ychdecimals=1){
+  tab <- tabdata %>%
+  gt(groupname_col = "rowlab") %>%
+  cols_hide(c(table, geoid, sgeotype, tabvarname)) %>%
+  tab_header(
+    title = .title
+      ) %>%
+  cols_label(usgeoname="",
+             y2009="2009",
+             y2014="2014",
+             y2019="2019",
+             ch0914=html("2009<br>to 2014"),
+             ch1419=html("2014<br>to 2019"),
+             ch0919=html("2009<br>to 2019"),
+             ) %>%
+  tab_spanner(
+    label = html("Change"),
+    columns = contains("ch")
+    ) %>%
+  cols_align(align="left", columns = usgeoname) %>%
+  fmt_number(
+    columns=c(starts_with("y"), starts_with("ch")),
+    decimals=ychdecimals
+  ) %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      # cell_text(weight = "bold") # size = px(15), , font = "arial"
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=str_detect(usgeoname, "Cambridge")
+      )
+    ) %>%
+  cols_width(
+    usgeoname ~ px(250),
+    starts_with("y") ~ px(150),
+    starts_with("ch") ~ px(150)
+  )
+  # %>%   tab_options(row_group.as_column=TRUE)
+  # cells_row_groups()
+tab
+}
+
 ```
 
 
 ## Population size
-```{r}
+
+```{r pop_decennial}
+# count(popann %>% filter(state=="36"), sgeotype)
+
+# popann %>% filter(state=="36", year==2020, str_detect(geoname, "Salem"))
+# popannold %>% filter(state=="36", year==2020, str_detect(geoname, "Salem"))
+
+census2010pop <- popann %>%
+  filter(state=="36", 
+         !is.na(sgeotype), 
+         name=="popcensus2010",
+         !str_detect(geoname, "(pt.)"),
+         !str_detect(geoname, "Balance")) %>%
+  filter(sgeotype=="state" | 
+           sgeotype=="county" & str_detect_any(geoname, c("Saratoga", "Warren", "Washington")) |
+           sgeotype=="cosub" & county=="115" |
+           sgeotype=="place") %>%
+  select(sgeotype, usgeoname=geoname, pop2010=value) %>%
+  inner_join(subareas %>%
+               filter(year==2019) %>%
+               select(stabbr, geoid, sgeotype, usgeoname),
+              by = c("sgeotype", "usgeoname"))
+
+census2020pop <- subareas %>%
+  filter(year==2019) %>%
+  mutate(geocode=str_sub(geoid, 8, -1)) %>%
+  select(stabbr, geoid, geocode, sgeotype, usgeoname) %>%
+  left_join(census2020 %>%
+              select(usgeoname=name, geocode, pop2020=pop100),
+            by=c("usgeoname", "geocode"))
+
+tabdata <- census2010pop %>%
+  left_join(census2020pop %>%
+              select(geoid, usgeoname, pop2020),
+            by=c("geoid", "usgeoname")) %>%
+  select(stabbr, sgeotype, usgeoname, pop2010, pop2020) %>%
+  mutate(change=pop2020 - pop2010, 
+         pch=change / pop2010,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+  
+tab <- fcenpop_table(tabdata, "Decennial census population in 2010 and 2020")
+tab
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_decennialpop.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_decennialpop_data.csv"))
+
+```
+
+
+
+```{r popann_census}
+# prep popann data
+glimpse(subareas)
+count(subareas, year)
+tmp <- count(popann %>% filter(state=="36"), geoname)
+popann %>% filter(state=="36", str_detect(geoname, "Washington Cou"))
+glimpse(popann)
+
+pophist <- subareas %>%
+  filter(year==2019) %>%
+  select(stabbr, geoid, sgeotype, usgeoname) %>%
+  inner_join(popann %>%
+               filter(state=="36", !is.na(sgeotype)) %>%
+               select(sgeotype, geoid, popgeoname=geoname, year, esttype, value), by = c("geoid", "sgeotype"))
+
+count(pophist, usgeoname)
+
+base <- 2010
+pdata <- pophist %>%
+  # filter(str_detect_any(usgeoname, c("Cambridge village", "Greenwich village"))) %>%
+  filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
+  filter(!str_detect(usgeoname, "Greenwich town")) %>%
+  filter(esttype=="est") %>%
+  mutate(year=as.integer(year)) %>%
+  filter(year >= base) %>%
+  group_by(geoid, usgeoname) %>%
+  mutate(ivalue=value / value[year==base],
+         cumpch=ivalue - 1) %>%
+  ungroup
+
+capt1 <- "Note: White Creek probably will look better in 2020 when Census updates annual estimates."
+capt2 <- paste0("Source: ", source_cenpop, ", 2020 vintage.")
+capt <- paste0(capt1, "\n", capt2)
+p <- pdata %>%
+  ggplot(aes(year, cumpch, colour=usgeoname)) +
+  geom_line(size=1) +
+  geom_point(size=1.5) +
+  geom_hline(yintercept = 0) +
+  scale_x_continuous(name=NULL, breaks=seq(2010, 2020, 1)) +
+  scale_y_continuous(name=paste0("% change since ", base), 
+                     breaks=seq(-1, 1, .005), 
+                     labels=label_percent(accuracy=.1),
+                     limits=c(NA, NA)) +
+  scale_colour_discrete(name="age group") +
+  ggtitle(label="Cambridge and selected other areas",
+          subtitle = "Cumulative % change in population since 2010") +
+  labs(caption = capt) +
+  theme_bw() +
+  caption_left
+p
+
+ggsave(here::here("results", "fig_annpop.png"), plot=p, width=10, height=8, scale=1)
+write_csv(pdata, here::here("results", "fig_annpop_data.csv"))
+
+# https://www.census.gov/content/dam/Census/programs-surveys/acs/guidance/training-presentations/20180418_MOE.pdf
+# At a given confidence level, the estimate and the actual population value
+# will differ by no more than the value of the MOE; 90% confidence level is the
+# Census Bureau Standard (Margin of Error MOE = 1.645 x SE)
+
+# quick check vs Census
+pophist %>%
+  filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
+  filter(!str_detect(usgeoname, "Greenwich town"), year %in% c(2010, 2020), esttype %in% c("est", "census")) %>%
+  filter(!is.na(popgeoname)) %>%
+  select(-stabbr, -popgeoname) %>%
+  pivot_wider(names_from = esttype) %>%
+  mutate(diff=est - census,
+         pdiff=diff / census)
+
+
+pophist %>%
+  filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
+  filter(!str_detect(usgeoname, "Greenwich town"), year %in% c(2010, 2020), esttype %in% c("est", "census")) %>%
+  filter(!is.na(popgeoname)) %>%
+  select(-stabbr, -popgeoname) %>%
+  pivot_wider(names_from = esttype) %>%
+  mutate(diff=est - census,
+         pdiff=diff / census)
+
+
+popcheck <- pophist %>%
+  filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
+  filter(!str_detect(usgeoname, "Greenwich town"), year %in% c(2010, 2020), esttype %in% c("est", "census")) %>%
+  mutate(esttype=ifelse(year==2020 & esttype=="census", "censusest", esttype)) %>%
+  filter(!is.na(popgeoname)) %>%
+  select(-stabbr, -popgeoname) %>%
+  pivot_wider(names_from=c(esttype, year)) %>%
+  left_join(pop2020 %>%
+              select(sgeotype, usgeoname, census_2020=pop100) %>%
+              filter(!is.na(census_2020)) %>%
+              distinct(),
+            by = c("sgeotype", "usgeoname"))
+
+# %>%
+  # pivot_longer(-c(geoid, sgeotype, usgeoname)) %>%
+  # separate(name, c("esttype", "year")) %>% 
+  # pivot_wider(names_from = year, names_prefix = "y")
+popcheck %>%
+  mutate(ee=est_2020 / est_2010 - 1,
+         cc=census_2020 / census_2010 - 1,
+         cce=censusest_2020 / census_2020 -1) %>%
+  select(-c(geoid, sgeotype)) %>%
+  gt() %>%
+  fmt_percent(
+    columns = c(ee, cc, cce),
+    decimals = 1)
+
+
+```
+
+
+
+```{r }
 tab_B01003 <- readRDS(here::here("data", "tab_B01003.rds"))
 count(tab_B01003, tabvarname, vdescription)
 
@@ -878,105 +1646,35 @@ write_csv(tabdata, file=here::here("results", "tab_poptot_data.csv"))
 
 
 ## Age
+
+### Median age
 ```{r median_age_raw}
 # tab <- "B01002"
 tab_B01002 <- readRDS(here::here("data", "tab_B01002.rds"))
-
-glimpse(df)
-tab_B01002 <- df %>%
-  pivot_longer(starts_with("x"), names_to = "vname", values_to = "mdnage") %>%
-  filter(!is.na(mdnage)) %>%
-  mutate(vname=case_when(vname %in% c("x156", "x94") ~ "total",
-                         vname %in% c("x157", "x95") ~ "male",
-                         vname %in% c("x158", "x96") ~ "female")) %>%
-  select(year, table, vname, valtype, sgeotype, geoid, usgeoname, mdnage) 
-
+count(tab_B01002, tabvarname, vdescription)
 
 tabdata <- tab_B01002 %>%
-  filter(eval(key_subareas)) %>% 
-  filter(!str_detect(usgeoname, "Schuy"),
-         !str_detect_any(usgeoname, c("Dresden", "Hampton", "Putnam"))) %>%
-  filter(vname=="total", valtype=="est") %>%
-  select(year, table, geoid, sgeotype, usgeoname, mdnage) %>%
-  pivot_wider(names_from = year, names_prefix = "y", values_from = mdnage) %>%
+  filter(geoid %in% subareas$geoid, valtype=="est", tabvarname=="B01002_001") %>%
+  select(year, table, tabvarname, sgeotype, geoid, usgeoname, value) %>%
+  pivot_wider(names_from = year, names_prefix = "y") %>%
   mutate(ch0914=y2014 - y2009,
          ch1419=y2019 - y2014,
-         rowlab=factor(sgeotype,
-                       levels=c("state", "county", "place", "cosub"),
-                       labels=c("Statewide",
-                                "Selected counties",
-                                "Selected villages",
-                                "Selected towns"))) %>%
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
   arrange(rowlab, usgeoname)
 tabdata
 
-tab <- tabdata %>%
-  # group_by(rowlab) %>%
-  gt(groupname_col = "rowlab") %>%
-  cols_hide(c(table, geoid, sgeotype)) %>%
-  tab_header(
-    title = "Median age in selected areas"
-      ) %>%
-  cols_label(usgeoname="",
-             y2009="2009",
-             y2014="2014",
-             y2019="2019",
-             ch0914="2009 to 2014",
-             ch1419="2014 to 2019",
-             ) %>%
-  tab_spanner(
-    label = html("Change"),
-    columns = contains("ch")
-    ) %>%
-  cols_align(align="left", columns = usgeoname) %>%
-  fmt_number(
-    columns=c(starts_with("y"), starts_with("ch")),
-    decimals=1
-  ) %>%
-  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
-  tab_footnote(
-    footnote = "CAUTION: small areas have high margins of error.",
-    # locations = cells_column_labels(columns = starts_with("est"))
-    locations = cells_title(groups="title")
-    ) %>%
-  tab_style(
-    style = list(
-      cell_text(weight = "bold") # size = px(15), , font = "arial"
-      ),
-    locations = cells_row_groups()
-    ) %>%
-  tab_style(
-    style = list(
-      # cell_text(weight = "bold") # size = px(15), , font = "arial"
-      cell_fill(color = "lightcyan")
-      ),
-    locations = cells_body(
-      rows=str_detect(usgeoname, "Cambridge")
-      )
-    ) 
-# %>%   tab_options(row_group.as_column=TRUE)
-# cells_row_groups()
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, .title="Median age in selected areas", ychdecimals=1)
 tab
-
+gtsave(tab, filename="tab_mdnage.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_mdnage_data.csv"))
 
 ```
 
 
-### Median age
-```{r median_age}
-
-# geokeeps <- c(newyork_state, washington_county, cambridge_village, greenwich_village, cambridge_town, greenwich_town)
-geokeeps <- c(newyork_state, washington_county, cambridge_village, greenwich_village)
-pdata <- acsdata %>%
-  filter(tableid=="B01002", 
-         vnum=="001",
-         geoid %in% geokeeps) %>%
-  select(geotype, geoid, sname, variable, year, estimate, moe, concept) %>%
-  mutate(geoid=factor(geoid, levels=geokeeps),
-         order=as.integer(geoid),
-         sname=fct_reorder(sname, order, min)) %>% # order we want
-  arrange(sname, year)
-
+```{r OLD_median_age_bars}
 # capt1 <- paste0("Note: Costs above 30 percent are generally often defined as burdensome. Smaller geographic areas generally have a larger margin of error.")
 capt <- paste0("Source: ", source_acs, ".")
 # capt <- paste0(capt1, "\n", capt2)
@@ -1006,6 +1704,38 @@ write_csv(pdata, here::here("results", "fig_median_age_bars_data.csv"))
 ```
 
 ### Age breakdown
+```{r}
+glimpse(tab_B01001)
+
+varsall %>%
+  filter(table=="B01001", year==2019) %>%
+  arrange(vnum) %>%
+  select(year, table, vnum, vname, vdescription)
+# vnum: total is 1, 25 to 34 
+# 2, 26 total male, female
+# 11, 12 25-34 male
+# 35, 36 25-34 female
+
+td1 <- tab_B01001 %>%
+  filter(vnum %in% c(2, 6, 11:12, 35:36),
+         valtype=="est") %>%
+  mutate(group=case_when(vnum %in% c(2, 26) ~ "total",
+                         TRUE ~ "age2534")) %>%
+  group_by(year, group) %>%
+  summarise(value=sum(value), .groups="drop")
+
+tabvars <- tab_B01001 %>%
+  filter(year==2019)
+  group_by(tabvarname)
+tabvars <- count(tab_B01001, tabvarname, vdescription) %>%
+  separate(vdescription, into=paste0("v", 1:8), sep="%", remove = FALSE)
+
+```
+
+
+
+
+
 ```{r fig_pop_pyramid_areas}
 geokeeps <- c(newyork_state, washington_county, cambridge_village, greenwich_village)
 # geokeeps <- c(newyork_state, washington_county, cambridge_village, greenwich_village,
@@ -1793,14 +2523,6 @@ f <- function(obj){
 df <- f(obj)
 
 ```
-
-
-# ACS RAW
-```{r acs_raw}
-
-
-```
-
 
 
 # WHY DO YOUNG PEOPLE COME TO A RURAL AREA?
