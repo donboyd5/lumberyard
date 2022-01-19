@@ -138,6 +138,7 @@ caption_left <- theme(plot.caption = element_text(hjust = 0))
 
 #.. source notes ----
 source_acs <- "American Community Survey 5-year summary file"
+source_cornell <- "Cornell Program on Applied Demographics (PAD)"
 source_decennialpop <- "U.S. Census Bureau Decennial Census"
 source_cenpop <- "U.S. Census Bureau City and Town Population Estimates"
 # (https://www.census.gov/data/tables/time-series/demo/popest/2010s-total-cities-and-towns.html)
@@ -720,6 +721,74 @@ saveRDS(df4, file.path(dcenpop, "popann2020.rds"))
 ```
 
 
+```{r housing_decennial}
+z2010 <- here::here("data", "DECENNIALPL2010.H1_2022-01-19T092207.zip")
+z2020 <- here::here("data", "DECENNIALPL2020.H1_2022-01-19T094129.zip")
+
+df2010 <- read_csv(archive_read(z2010, "DECENNIALPL2010.H1_data_with_overlays_2022-01-19T092201.csv"),
+         col_types = cols(.default="c"), skip=1)
+
+df2020 <- read_csv(archive_read(z2020, "DECENNIALPL2020.H1_data_with_overlays_2022-01-19T094122.csv"),
+         col_types = cols(.default="c"), skip=1)
+
+dfcen1 <- bind_rows(df2010 %>%
+                     setNames(c("id", "total", "occupied", "vacant", "usgeoname")) %>% 
+                     mutate(year=2010),
+                   df2020 %>% 
+                     setNames(c("id", "usgeoname", "total", "occupied", "vacant")) %>%
+                     mutate(year=2020)) %>%
+  mutate(year=as.integer(year),
+         across(c(total, occupied, vacant), as.numeric),
+         usgeoname=str_replace(usgeoname, "Salem village", "Salem CDP")) %>%
+  mutate(sgeotype=case_when(id=="0400000US36" ~ "state",
+                            id %in% c("0500000US36091", "0500000US36113", "0500000US36115") ~
+                              "county",
+                            str_detect_any(usgeoname, c("village", "CDP")) ~ "place",
+                            str_detect(usgeoname, "town") ~ "cosub")) %>%
+  select(id, usgeoname, sgeotype, year, total, occupied, vacant)
+saveRDS(dfcen1,  here::here("data", "cenhousing.rds"))
+
+
+```
+
+
+```{r housing_ann}
+url <- "https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/housing/HU-EST2020_ALL.csv"
+
+
+f <- function(url) download.file(url, file.path(dcenpop, path_file(url)), mode="wb")
+f(url)
+
+# combine files and clean
+f2 <- function(url, dcenpop){
+  df <- vroom(file.path(dcenpop, path_file(url)), col_types=cols(.default="c"))
+  df %>%
+    mutate(src=path_file(url))
+}
+df <- f2(url, dcenpop)
+names(df)
+
+df %>% filter(STATE=="36") # counties
+
+# use !! to unquote one variable or !!! to unquote a vector of variables inside
+# of arrange(). When you pass those columns, if they are bare, quote them using
+# quo() for one variable or quos() for a vector
+idvars <- quos(c(sumlev, region, division, state, 
+         county, place, cousub, concit, primgeo_flag, funcstat,
+         stname, ctyname, name))
+
+df2 <- df %>%
+  setNames(str_to_lower(names(.))) %>%
+  select(src, !!!idvars, everything()) %>%
+  # we want all pop variables to start with "pop" and end with the year
+  rename(popcensus2010=census2010pop,
+         popestimatesbase2010=estimatesbase2010,
+         popcensusestimate2020=popestimate042020) %>%
+  mutate(across(starts_with("pop"), as.numeric))
+
+```
+
+
 
 ```{r OLD_read_popann_and_xwalk}
 
@@ -886,34 +955,37 @@ saveRDS(dfall4, file.path(dcenpop, "popann.rds"))
 
 
 ```{r ONETIME_pad_projections}
-# Cornell Washington County projections
-pad1 <- read_excel(here::here("data", "padprojections115.xlsx"))
+
+f <- function(cnty){
+  # NOTE: I had to open these files as xls and save as xlsx for this to work
+  read_excel(here::here("data", paste0("padprojections", cnty,".xlsx")))
+  }
+pad1 <- map_dfr(c(91, 113, 115), f)
 
 pad2 <- pad1 %>%
   setNames(str_to_lower(names(.))) %>%
   pivot_longer(-c(1:8), names_to = "year") %>%
-  mutate(year=str_sub(year, 4, 7))
+  mutate(year=str_sub(year, 4, 7) %>% as.integer)
 glimpse(pad2)
-count(pad2, county, county_descr)
-count(pad2, sexcode, sex_descr)
-count(pad2, agegrpcode, agegrp_descr)
-count(pad2, racecode, race_descr) # all races
+
 
 pad3 <- pad2 %>%
   select(-racecode, -race_descr) %>%
   rename(ccode=county, county=county_descr, 
          sex=sex_descr,
          agecode=agegrpcode, agegrp=agegrp_descr) %>%
-  mutate(year=as.integer(year), sex=str_to_lower(sex))
+  mutate(sex=str_to_lower(sex))
 glimpse(pad3)
 
 pad3 %>%
   filter(sex=="all", agecode==-999) %>%
-  ggplot(aes(year, value)) +
+  group_by(county) %>%
+  mutate(pdvalue=value / value[year==2015] - 1) %>%
+  ggplot(aes(year, pdvalue, colour=county)) +
   geom_line() +
   geom_point()
 
-saveRDS(pad3, here::here("data", "popproj_pad_washco.rds"))
+saveRDS(pad3, here::here("data", "popproj_pad_cnty.rds"))
 
 ```
 
@@ -1132,7 +1204,8 @@ dmig <- r"()"
 ```{r load_data}
 uvacs <- readRDS(here::here("data", "uvacs.rds"))
 acsdata <- readRDS(here::here("data", "acsdata.rds"))
-popwash <- readRDS(here::here("data", "popproj_pad_washco.rds"))
+# popwash <- readRDS(here::here("data", "popproj_pad_washco.rds"))
+popproj <- readRDS(here::here("data", "popproj_pad_cnty.rds"))
 popannold <- readRDS(file.path(dcenpop, "popann.rds"))
 popann <- readRDS(file.path(dcenpop, "popann2020.rds"))
 census2020 <- readRDS(file.path(dpl, "census2020plny.rds"))
@@ -1222,8 +1295,13 @@ subareas <- geokeep %>%
 ```{r get_save_acs_tables}
 tabdescribe
 count(tabdescribe, subject)
-tmp <- tabdescribe %>% filter(subject=="Age-Sex", year==2019)
+tmp <- tabdescribe %>% filter(subject=="Educational Attainment", year==2019)
 count(tabdescribe %>% filter(table=="B01001"), year)
+count(tabdescribe %>% filter(table=="B07009"), year)
+count(tabdescribe %>% filter(table=="B15001"), year)
+count(tabdescribe %>% filter(table=="B15002"), year)
+count(tabdescribe %>% filter(table=="B15003"), year)
+
 
 tabdescribe %>% 
   filter(table=="C24050", year==2019) %>%
@@ -1249,6 +1327,87 @@ saveRDS(tab_B01002, here::here("data", "tab_B01002.rds"))
 tab_B01001 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B01001")
 tab_B01001
 saveRDS(tab_B01001, here::here("data", "tab_B01001.rds"))
+
+#.. B06012 poverty ----
+tab_B06012 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B06012")
+tab_B06012
+saveRDS(tab_B06012, here::here("data", "tab_B06012.rds"))
+
+#.. educational attainment ----
+#.. B07009 GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY EDUCATIONAL ATTAINMENT FOR CURRENT RESIDENCE IN THE UNITED STATES
+tab_B07009 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B07009")
+tab_B07009
+saveRDS(tab_B07009, here::here("data", "tab_B07009.rds"))
+
+tab_B15001 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B15001")
+tab_B15001
+saveRDS(tab_B15001, here::here("data", "tab_B15001.rds"))
+
+#.. B07001 Geographical Mobility In The Past Year By Age For Current Residence In The United States ----
+tab_B07001 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B07001")
+tab_B07001
+saveRDS(tab_B07001, here::here("data", "tab_B07001.rds"))
+
+
+#.. B07409 GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY EDUCATIONAL ATTAINMENT FOR RESIDENCE 1 YEAR AGO IN THE UNITED STATES
+tab_B07409 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B07409")
+tab_B07409
+saveRDS(tab_B07409, here::here("data", "tab_B07409.rds"))
+
+
+#.. B07403 GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY SEX FOR RESIDENCE 1 YEAR AGO IN THE UNITED STATES ----
+
+
+# .. B09005 HOUSEHOLD TYPE FOR CHILDREN UNDER 18 YEARS IN HOUSEHOLDS (EXCLUDING HOUSEHOLDERS, SPOUSES, AND UNMARRIED PARTNERS) ----
+tab_B09005 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B09005")
+tab_B09005
+saveRDS(tab_B09005, here::here("data", "tab_B09005.rds"))
+
+#.. B11001  HOUSEHOLD TYPE (INCLUDING LIVING ALONE) ----
+tab_B11001 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B11001")
+tab_B11001
+saveRDS(tab_B11001, here::here("data", "tab_BB11001.rds"))
+
+
+#.. B15002 SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER ----
+tab_B15002 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B15002")
+tab_B15002
+saveRDS(tab_B15002, here::here("data", "tab_B15002.rds"))
+
+# tab_C15002 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "C15002")
+
+#.. B19013 MEDIAN HOUSEHOLD INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) ----
+tab_B19013 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B19013")
+tab_B19013
+saveRDS(tab_B19013, here::here("data", "tab_B19013.rds"))
+
+
+#.. B19113 MEDIAN FAMILY INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) ----
+
+# HOUSING ---- https://censusreporter.org/topics/housing/ the American Community
+# Survey also gathers extensive data about the housing conditions of
+# respondents, including whether they own or rent their home, how much they
+# spend on housing, and the physical characteristics of homes. The ACS primarily
+# reports housing data in tables with codes beginning with 25.
+
+
+#.. B25077 Owner-occupied housing units Median Value (Dollars)  ----
+tab_B25077 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25077")
+tab_B25077
+saveRDS(tab_B25077, here::here("data", "tab_B25077.rds"))
+
+#.. B25008  TOTAL POPULATION IN OCCUPIED HOUSING UNITS BY TENURE ----
+tab_B25008 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25008")
+tab_B25008
+saveRDS(tab_B25008, here::here("data", "tab_B25008.rds"))
+
+
+
+#.. NO DATA C15003 EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER ----
+# tab_C15003 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "C15003")
+# tab_C15003
+# saveRDS(tab_C15003, here::here("data", "tab_C15003.rds"))
+
 
 #.. C24050 Industry By Occupation For The Civilian  Employed Population 16 Years And Over ----
 tab_C24050 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "C24050")
@@ -1331,17 +1490,10 @@ fcenpop_table <- function(tabdata, .title){
 tab
 }
 
-tab <- fcenpop_table(tabdata, "Decennial census population in 2010 and 2020")
-tab
-# webshot options
-# default zoom=2, expand=5
-gtsave(tab, filename="tab_decennialpop.png", path=here::here("results"), zoom=1, expand=10)
-
-
 fpch_table <- function(tabdata, .title, ydecimals=0){
   tab <- tabdata %>%
   gt(groupname_col = "rowlab") %>%
-  cols_hide(c(table, geoid, sgeotype, tabvarname)) %>%
+  cols_hide(c(table, tabvarname, sgeotype, geoid)) %>%
   tab_header(
     title = .title
       ) %>%
@@ -1354,8 +1506,12 @@ fpch_table <- function(tabdata, .title, ydecimals=0){
              pch0919=html("2009<br>to 2019"),
              ) %>%
   tab_spanner(
+    label = html("5-years ending in:"),
+    columns = starts_with("y")
+    ) %>%
+  tab_spanner(
     label = html("Percent change"),
-    columns = contains("pch")
+    columns = starts_with("pch")
     ) %>%
   cols_align(align="left", columns = usgeoname) %>%
   fmt_number(
@@ -1397,10 +1553,17 @@ tab
 }
 
 
-fch_table <- function(tabdata, .title, ychdecimals=1){
+fch_table <- function(tabdata, .title, decimals=1, type="number"){
+  if(type=="percent") {
+    scale <- 100
+    pattern <- "{x}%"
+    } else {
+      scale=1
+      pattern <- "{x}"
+    }
   tab <- tabdata %>%
   gt(groupname_col = "rowlab") %>%
-  cols_hide(c(table, geoid, sgeotype, tabvarname)) %>%
+  cols_hide(any_of(c("table", "tabvarname", "sgeotype", "geoid"))) %>%
   tab_header(
     title = .title
       ) %>%
@@ -1413,13 +1576,19 @@ fch_table <- function(tabdata, .title, ychdecimals=1){
              ch0919=html("2009<br>to 2019"),
              ) %>%
   tab_spanner(
+    label = html("5-years ending in:"),
+    columns = starts_with("y")
+    ) %>%
+  tab_spanner(
     label = html("Change"),
-    columns = contains("ch")
+    columns = starts_with("ch")
     ) %>%
   cols_align(align="left", columns = usgeoname) %>%
   fmt_number(
     columns=c(starts_with("y"), starts_with("ch")),
-    decimals=ychdecimals
+    decimals=decimals,
+    scale_by = scale,
+    pattern = pattern,
   ) %>%
   tab_source_note(paste0("Source: ", source_acs, ".")) %>%
   tab_footnote(
@@ -1442,10 +1611,17 @@ fch_table <- function(tabdata, .title, ychdecimals=1){
       rows=str_detect(usgeoname, "Cambridge")
       )
     ) %>%
+  # cols_width(
+  #   usgeoname ~ px(250),
+  #   starts_with("y") ~ px(150),
+  #   starts_with("ch") ~ px(150)
+  # ) %>%
   cols_width(
-    usgeoname ~ px(250),
-    starts_with("y") ~ px(150),
-    starts_with("ch") ~ px(150)
+    usgeoname ~ pct(60),
+    everything() ~ pct(40)
+    ) %>%
+  tab_options(
+    table.width = pct(100)
   )
   # %>%   tab_options(row_group.as_column=TRUE)
   # cells_row_groups()
@@ -1539,7 +1715,7 @@ pdata <- pophist %>%
          cumpch=ivalue - 1) %>%
   ungroup
 
-capt1 <- "Note: White Creek probably will look better in 2020 when Census updates annual estimates."
+capt1 <- "Note: Several 2020 estimates are considerably different from corresponding decennial estimates."
 capt2 <- paste0("Source: ", source_cenpop, ", 2020 vintage.")
 capt <- paste0(capt1, "\n", capt2)
 p <- pdata %>%
@@ -1557,7 +1733,8 @@ p <- pdata %>%
           subtitle = "Cumulative % change in population since 2010") +
   labs(caption = capt) +
   theme_bw() +
-  caption_left
+  caption_left +
+  legend_notitle
 p
 
 ggsave(here::here("results", "fig_annpop.png"), plot=p, width=10, height=8, scale=1)
@@ -1569,59 +1746,162 @@ write_csv(pdata, here::here("results", "fig_annpop_data.csv"))
 # Census Bureau Standard (Margin of Error MOE = 1.645 x SE)
 
 # quick check vs Census
-pophist %>%
-  filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
-  filter(!str_detect(usgeoname, "Greenwich town"), year %in% c(2010, 2020), esttype %in% c("est", "census")) %>%
-  filter(!is.na(popgeoname)) %>%
-  select(-stabbr, -popgeoname) %>%
-  pivot_wider(names_from = esttype) %>%
-  mutate(diff=est - census,
-         pdiff=diff / census)
+# pophist %>%
+#   filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
+#   filter(!str_detect(usgeoname, "Greenwich town"), year %in% c(2010, 2020), esttype %in% c("est", "census")) %>%
+#   filter(!is.na(popgeoname)) %>%
+#   select(-stabbr, -popgeoname) %>%
+#   pivot_wider(names_from = esttype) %>%
+#   mutate(diff=est - census,
+#          pdiff=diff / census)
 
 
-pophist %>%
-  filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
-  filter(!str_detect(usgeoname, "Greenwich town"), year %in% c(2010, 2020), esttype %in% c("est", "census")) %>%
-  filter(!is.na(popgeoname)) %>%
-  select(-stabbr, -popgeoname) %>%
-  pivot_wider(names_from = esttype) %>%
-  mutate(diff=est - census,
-         pdiff=diff / census)
+# pophist %>%
+#   filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
+#   filter(!str_detect(usgeoname, "Greenwich town"), year %in% c(2010, 2020), esttype %in% c("est", "census")) %>%
+#   filter(!is.na(popgeoname)) %>%
+#   select(-stabbr, -popgeoname) %>%
+#   pivot_wider(names_from = esttype) %>%
+#   mutate(diff=est - census,
+#          pdiff=diff / census)
 
 
-popcheck <- pophist %>%
-  filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
-  filter(!str_detect(usgeoname, "Greenwich town"), year %in% c(2010, 2020), esttype %in% c("est", "census")) %>%
-  mutate(esttype=ifelse(year==2020 & esttype=="census", "censusest", esttype)) %>%
-  filter(!is.na(popgeoname)) %>%
-  select(-stabbr, -popgeoname) %>%
-  pivot_wider(names_from=c(esttype, year)) %>%
-  left_join(pop2020 %>%
-              select(sgeotype, usgeoname, census_2020=pop100) %>%
-              filter(!is.na(census_2020)) %>%
-              distinct(),
-            by = c("sgeotype", "usgeoname"))
+# popcheck <- pophist %>%
+#   filter(str_detect_any(usgeoname, c("Cambridge", "Greenwich", "White Creek", "Washington County"))) %>%
+#   filter(!str_detect(usgeoname, "Greenwich town"), year %in% c(2010, 2020), esttype %in% c("est", "census")) %>%
+#   mutate(esttype=ifelse(year==2020 & esttype=="census", "censusest", esttype)) %>%
+#   filter(!is.na(popgeoname)) %>%
+#   select(-stabbr, -popgeoname) %>%
+#   pivot_wider(names_from=c(esttype, year)) %>%
+#   left_join(pop2020 %>%
+#               select(sgeotype, usgeoname, census_2020=pop100) %>%
+#               filter(!is.na(census_2020)) %>%
+#               distinct(),
+#             by = c("sgeotype", "usgeoname"))
 
 # %>%
   # pivot_longer(-c(geoid, sgeotype, usgeoname)) %>%
   # separate(name, c("esttype", "year")) %>% 
   # pivot_wider(names_from = year, names_prefix = "y")
-popcheck %>%
-  mutate(ee=est_2020 / est_2010 - 1,
-         cc=census_2020 / census_2010 - 1,
-         cce=censusest_2020 / census_2020 -1) %>%
-  select(-c(geoid, sgeotype)) %>%
-  gt() %>%
-  fmt_percent(
-    columns = c(ee, cc, cce),
-    decimals = 1)
+# popcheck %>%
+#   mutate(ee=est_2020 / est_2010 - 1,
+#          cc=census_2020 / census_2010 - 1,
+#          cce=censusest_2020 / census_2020 -1) %>%
+#   select(-c(geoid, sgeotype)) %>%
+#   gt() %>%
+#   fmt_percent(
+#     columns = c(ee, cc, cce),
+#     decimals = 1)
 
 
 ```
 
 
+```{r fig_copopproj}
+pdata <- popproj %>%
+  filter(sex=="all", agecode==-999) %>%
+  group_by(county) %>%
+  mutate(pdvalue=value / value[year==2015] - 1)
 
-```{r }
+p <- pdata %>%
+  ggplot(aes(year, pdvalue, colour=county)) +
+  geom_line() +
+  geom_point()
+
+capt <- paste0("Source: ", source_cornell, ", as released in 2018.")
+p <- pdata %>%
+  ggplot(aes(year, pdvalue, colour=county)) +
+  geom_line(size=1) +
+  geom_point(size=1.5) +
+  geom_hline(yintercept = 0) +
+  scale_x_continuous(name=NULL, breaks=seq(2010, 2040, 5)) +
+  scale_y_continuous(name=paste0("% change since 2015"), 
+                     breaks=seq(-1, 1, .02), 
+                     labels=label_percent(accuracy=1),
+                     limits=c(NA, NA)) +
+  scale_colour_discrete(name="county") +
+  ggtitle(label="Projected population in selected counties",
+          subtitle = "Cornell estimates released in 2018") +
+  labs(caption = capt) +
+  theme_bw() +
+  caption_left +
+  legend_notitle
+p
+
+ggsave(here::here("results", "fig_copopproj.png"), plot=p, width=10, height=8, scale=1)
+write_csv(pdata, here::here("results", "fig_copopproj_data.csv"))
+
+```
+
+
+
+```{r fig_washcoproj_age}
+glimpse(popwash)
+count(popwash, agecode, agegrp) %>% ht
+
+pdata1 <- popwash %>%
+  filter(sex=="all") %>%
+  mutate(agegrp2=case_when(agecode == -999 ~ "total",
+                           agecode %in% 0:17 ~ "agele17",
+                           agecode %in% 18:24 ~ "age1824",
+                           agecode %in% 25:34 ~ "age2534",
+                           agecode %in% 35:44 ~ "age3544",
+                           agecode %in% 45:64 ~ "age4564",
+                           agecode %in% 65:84 ~ "age6584",
+                           agecode == 85 ~ "age85p",
+                           agecode == 999 ~ "median")) %>%
+  group_by(year, agegrp=agegrp2) %>%
+  summarise(n=n(), value=sum(value), .groups="drop")
+
+pdata1
+pdata1 %>% filter(agegrp=="median") %>% ggplot(aes(year, value)) + geom_line() + geom_point()
+
+pdata1 %>%
+  filter(str_detect(agegrp, "age")) %>%
+  ggplot(aes(year, value, colour=agegrp)) +
+  geom_line() +
+  geom_point()
+
+capt1 <- "Note: vertical axis does not start at zero."
+capt2 <- paste0("Source: ", source_padcoproj, ".")
+capt <- paste0(capt1, "\n", capt2)
+pdata <- pdata1 %>%
+  filter(str_detect(agegrp, "age")) %>%
+  mutate(agegrp = case_when(agegrp %in% c("agele17", "age1824") ~ "agele24",
+                            agegrp %in% c("age2534", "age3544") ~ "age2544",
+                            agegrp %in% c("age6584", "age85p") ~ "age65p",
+                            TRUE ~ agegrp)) %>%
+  group_by(year, agegrp) %>%
+  summarise(value=sum(value), .groups="drop")
+
+p <- pdata %>%
+  mutate(agegrp=factor(agegrp, 
+                       levels=c("agele24", "age2544", "age4564", "age65p"),
+                       labels=c("<= 24", "25-44", "45-64", "65+"))) %>%
+  # arrange(year, agegrp) %>%
+  ggplot(aes(year, value, colour=agegrp)) +
+  geom_line(size=1) +
+  geom_point(size=1) +
+  scale_x_continuous(name=NULL) +
+  scale_y_continuous(name="# of people", 
+                     breaks=seq(0, 60e3, 2e3), 
+                     labels=label_comma(accuracy=1),
+                     limits=c(NA, NA)) +
+  scale_colour_discrete(name="age group") +
+  ggtitle("Cornell population projections for Washington County") +
+  labs(caption = capt) +
+  theme_bw() +
+  caption_left
+p
+
+ggsave(here::here("results", "fig_washco_popproj.png"), plot=p, width=10, height=8, scale=1)
+write_csv(pdata, here::here("results", "fig_washco_popproj_data.csv"))
+
+```
+
+
+```{r acspop_DONOTUSE}
+# do not use ACS for trends in total population
 tab_B01003 <- readRDS(here::here("data", "tab_B01003.rds"))
 count(tab_B01003, tabvarname, vdescription)
 
@@ -1644,11 +1924,59 @@ write_csv(tabdata, file=here::here("results", "tab_poptot_data.csv"))
 
 ```
 
+## Household structure
+```{r}
+tab_B11001 <- readRDS(here::here("data", "tab_BB11001.rds"))
+tab_B09005 <- readRDS(here::here("data", "tab_B09005.rds"))
+
+```
+
+### Single parent or householder families
+```{r}
+# B09005	 		HOUSEHOLD TYPE FOR CHILDREN UNDER 18 YEARS IN HOUSEHOLDS (EXCLUDING HOUSEHOLDERS, SPOUSES, AND UNMARRIED PARTNERS)
+# B09005	 		Universe:  Population under 18 years in households (excluding householders, spouses, and unmarried partners)
+# B09005	1	B09005_001	Total:
+# B09005	2	B09005_002	Married-couple household
+# B09005	3	B09005_003	Cohabiting couple household
+# B09005	4	B09005_004	In male householder, no spouse/partner present household
+# B09005	5	B09005_005	In female householder, no spouse/partner present household
+tmp <- count(tab_B09005, vnum, tabvarname, vdescription)
+tmp <- tabdescribe %>% filter(table=="B09005")
+
+tabdata <- tab_B09005 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est", vnum %in% c(1, 4, 5)) %>%
+  mutate(vnum=factor(vnum, levels=c(1, 4, 5), labels=c("children", "malehead", "femalehead"))) %>%
+  select(year, table, vnum, sgeotype, geoid, usgeoname, value) %>%
+  pivot_wider(names_from = vnum) %>%
+  mutate(singlepct=(malehead + femalehead) / children) %>%
+  select(year, table, sgeotype, geoid, usgeoname, value=singlepct) %>%
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title="Percent of children living in households with only one household head", 
+                 decimals=1,
+                 type="percent")
+tab
+gtsave(tab, filename="tab_singleheads.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_singleheads_data.csv"))
+\
+
+```
+
+
 
 ## Age
 
 ### Median age
-```{r median_age_raw}
+```{r tab_median_age}
 # tab <- "B01002"
 tab_B01002 <- readRDS(here::here("data", "tab_B01002.rds"))
 count(tab_B01002, tabvarname, vdescription)
@@ -1670,36 +1998,6 @@ tab <- fch_table(tabdata, .title="Median age in selected areas", ychdecimals=1)
 tab
 gtsave(tab, filename="tab_mdnage.png", path=here::here("results"), zoom=1, expand=10)
 write_csv(tabdata, file=here::here("results", "tab_mdnage_data.csv"))
-
-```
-
-
-```{r OLD_median_age_bars}
-# capt1 <- paste0("Note: Costs above 30 percent are generally often defined as burdensome. Smaller geographic areas generally have a larger margin of error.")
-capt <- paste0("Source: ", source_acs, ".")
-# capt <- paste0(capt1, "\n", capt2)
-
-p <- pdata %>%
-  ggplot(aes(x=reorder(sname, order), y=estimate, fill=as.factor(year))) +
-  geom_col(position=position_dodge()) +
-  # scale_fill_brewer(palette = "Paired") +
-  scale_fill_manual(values=c('#e0f3db','#a8ddb5','#43a2ca')) +
-  theme_bw() +
-  labs(x=NULL,
-       y=NULL,
-       caption=capt) +
-  ggtitle(label=str_to_sentence("Median age, selected areas"),
-          subtitle = NULL) +
-  # theme(axis.text.y = element_text(hjust = 0)) +
-  # scale_x_continuous(breaks=seq(0, 100, 1), labels=label_comma(accuracy=.1), limits=xlims) +
-  legend_notitle +
-  caption_left
-p
-
-# p + scale_y_break(c(0, 30))
-
-ggsave(here::here("results", "fig_median_age_bars.png"), plot=p, width=10, height=8, scale=1)
-write_csv(pdata, here::here("results", "fig_median_age_bars_data.csv"))
 
 ```
 
@@ -1737,22 +2035,31 @@ tabvars <- count(tab_B01001, tabvarname, vdescription) %>%
 
 
 ```{r fig_pop_pyramid_areas}
+tab_B01001 <- readRDS(here::here("data", "tab_B01001.rds"))
+count(tab_B01001, tabvarname, vdescription)
+glimpse(tab_B01001)
+
 geokeeps <- c(newyork_state, washington_county, cambridge_village, greenwich_village)
 # geokeeps <- c(newyork_state, washington_county, cambridge_village, greenwich_village,
 #               cambridge_town, greenwich_town)
 
+geokeeps <- subareas %>% 
+  filter(year==2019) %>%
+  select(geoid, sgeotype, usgeoname) %>%
+  filter(geoid %in% c("04043US36", "05000US36115", "16000US3611825", "16000US3630675"))
+
+# vnum ranges for age groups
+agegroups <- read_csv(
+"agegroup, agelabel, flow, fhigh, mlow, mhigh
+0, total, 26, 26, 2, 2
+1, <= 17, 27, 30, 3, 6
+2, 18 to <= 24, 31, 34, 7, 10
+3, 25 to <= 34, 35, 36, 11, 12
+4, 35 to <= 64, 37, 43, 13, 19
+5, 65 to <= 84, 44, 48, 20, 24
+6, >=85, 49, 49, 25, 25")
+
 # vnum values for age groups - vnums for female low, high, then male
-# agegroups <- read_csv(
-# "agegroup, agelabel, flow, fhigh, mlow, mhigh
-# 0, total, 26, 26, 2, 2
-# 1, <= 17, 27, 30, 3, 6
-# 2, 18 to <= 24, 31, 34, 7, 10
-# 3, 25 to <= 34, 35, 36, 11, 12
-# 4, 35 to <= 64, 37, 43, 13, 19
-# 5, 65 to <= 84, 44, 48, 20, 24
-# 6, >=85, 49, 49, 25, 25")
-
-
 # finer groups
 agegroups <- read_csv(
 "agegroup, agelabel, flow, fhigh, mlow, mhigh
@@ -1765,9 +2072,8 @@ agegroups <- read_csv(
 5, 65 to <= 84, 44, 48, 20, 24
 6, >=85, 49, 49, 25, 25")
 
-
 vals <- function(low, high) {
-  tibble(vnum=str_pad(low:high, width = 3, side = "left", pad = "0"))
+  tibble(vnum=low:high)
 }
 
 agegroups_long <- agegroups %>%
@@ -1780,38 +2086,36 @@ agegroups_long <- agegroups %>%
   group_by(agegroup, agelabel, sex) %>%
   summarise(vals(low, high), .groups="drop")
 
-acsdata %>%
-  filter(tableid=="B01001") %>%
-  count(ulab4, ulab3, vnum) 
-
-basedata <- acsdata %>%
-  filter(tableid=="B01001",
-         geoid %in% geokeeps) %>%
-  select(geotype, geoid, sname, variable, year, estimate, moe, concept, 
-         vnum, ulab3, ulab4, ulabel) %>%
+pdata <- tab_B01001 %>%
+  filter(year==2019, valtype=="est") %>%
+  filter(geoid %in% geokeeps$geoid) %>%
+  select(year, table, geoid, sgeotype, usgeoname, vnum, value, vdescription) %>%
   left_join(agegroups_long, by="vnum") %>%
-  filter(!is.na(sex)) %>%
-  group_by(geotype, geoid, sname, sex, agegroup, agelabel, year) %>%
-  summarise(estimate=sum(estimate), .groups="drop") %>%
+  filter(!is.na(sex), agegroup!=0) %>% # keep just the details
+  group_by(sgeotype, geoid, usgeoname, sex, agegroup, agelabel, year) %>%
+  summarise(value=sum(value), .groups="drop") %>% # sums by agegroup and sex
   # now get pct share of area total population
-  group_by(geotype, geoid, sname, year) %>%
-  mutate(share=estimate / estimate[agegroup==0]) %>%
-  ungroup
-
-basedata %>%
-  filter(geoid==cambridge_village, year==2019)
-
-pdata <- basedata %>%
-  filter(year==2019, agegroup!=0) %>%  # geoid %in% c(cambridge_village, greenwich_village), 
-  mutate(geoid=factor(geoid, levels=geokeeps),
+  group_by(sgeotype, geoid, usgeoname, year) %>%
+  mutate(totpop=sum(value),
+         share=value / totpop) %>%
+  ungroup %>%
+  # put areas in desired order
+  mutate(geoid=factor(geoid, levels=geokeeps$geoid),
          order=as.integer(geoid),
-         sname=fct_reorder(sname, order, min),
+         usgeoname=fct_reorder(usgeoname, order, min),
          pshare=ifelse(sex=="male", -share, share)) %>% # order we want
-  arrange(sname, year)
+  arrange(usgeoname, year)
+
+# check the sums
+pdata %>%
+  group_by(usgeoname) %>%
+  summarise(value=sum(value),
+            share=sum(share),
+            totpop=first(totpop))
 
 clrs_br <- c("blue", "red")
 clrs <- c('#ef8a62', '#67a9cf') %>% rev()
-brks <- seq(-1, 1, .1)
+brks <- seq(-1, 1, .05)
 brk_labs <- percent(abs(brks), accuracy=.1)
 p <- pdata %>%
   ggplot(aes(x=pshare,
@@ -1824,10 +2128,9 @@ p <- pdata %>%
   scale_fill_manual(values=clrs) +
   theme_bw() +
   legend_notitle +
-  ggtitle("Population share by age group") +
-  facet_wrap(~ sname, ncol = 2)
+  ggtitle("Population share by age group, for the 5 years ending in 2019") +
+  facet_wrap(~ usgeoname, ncol = 2)
   # theme(axis.text.x = element_text(angle = 90, hjust = 1))
-
 p
 
 ggsave(here::here("results", "fig_pop_pyramid_areas.png"), plot=p, width=10, height=8, scale=1)
@@ -2002,17 +2305,709 @@ write_csv(pdata, here::here("results", "fig_washco_popproj_data.csv"))
 ```
 
 
+## Income and poverty
+```{r tab_mhhi}
+tab_B19013 <- readRDS(here::here("data", "tab_B19013.rds"))
+
+tmp <- count(tab_B19013, vnum, tabvarname, vdescription)
+tmp <- tabdescribe %>% filter(table=="B19013")
+
+
+tabdata <- tab_B19013 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est") %>%
+  select(year, table, sgeotype, geoid, usgeoname, value) %>%
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title="Median household income, in survey-end-year dollars", 
+                 decimals=0,
+                 type="number")
+tab
+gtsave(tab, filename="tab_mhhi.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_mhhi_data.csv"))
+
+```
+
+
+```{r tab_povrate}
+tab_B06012 <- readRDS(here::here("data", "tab_B06012.rds"))
+tmp <- count(tab_B06012, vnum, tabvarname, vdescription)
+tmp <- tabdescribe %>% filter(table=="B06012")
+
+
+tabdata <- tab_B06012 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est", vnum %in% c(1, 2)) %>%
+  mutate(vnum=factor(vnum, levels=c(1, 2), labels=c("popknown", "poppov"))) %>%
+  select(year, table, vnum, sgeotype, geoid, usgeoname, value) %>%
+  pivot_wider(names_from = vnum) %>%
+  mutate(povpct=poppov / popknown) %>%
+  select(year, table, sgeotype, geoid, usgeoname, value=povpct) %>%
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title="Percent of population below the poverty level", 
+                 decimals=1,
+                 type="percent")
+tab
+gtsave(tab, filename="tab_povrate.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_povrate_data.csv"))
+
+```
+
+
+
 ## Educational attainment
+```{r tab_edattain}
+#.. GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY EDUCATIONAL ATTAINMENT FOR CURRENT RESIDENCE IN THE UNITED STATES
+# tab_B07009 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B07009")
+tab_B07009 <- readRDS(here::here("data", "tab_B07009.rds"))
+
+tmp <- count(tab_B07009, vnum, tabvarname, vdescription)
+tmp <- tabdescribe %>% filter(table=="B07009")
+# 1 B07009_001 totpop
+# 5 B07009_005 BA
+# 6 B07009_006 Grad prof
+
+tabdata <- tab_B07009 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est", vnum %in% c(1, 5, 6)) %>%
+  mutate(vnum=factor(vnum, levels=c(1, 5, 6), labels=c("totpop", "ba", "gradplus"))) %>%
+  select(year, table, vnum, sgeotype, geoid, usgeoname, value) %>%
+  pivot_wider(names_from = vnum) %>%
+  mutate(bapluspct=(ba + gradplus) / totpop) %>%
+  select(year, table, sgeotype, geoid, usgeoname, value=bapluspct) %>%
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title="Percent of population age 25+ with bachelor's degree or higher", 
+                 decimals=1,
+                 type="percent")
+tab
+gtsave(tab, filename="tab_edattain.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_edattain_data.csv"))
+
+```
+
 
 ## Geographic mobility
+```{r move_prep}
+#.. moveins ----
+#.. GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY EDUCATIONAL ATTAINMENT FOR CURRENT RESIDENCE IN THE UNITED STATES
+# tab_B07009 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B07009")
+tab_B07009 <- readRDS(here::here("data", "tab_B07009.rds"))
 
-## Population growth
+tmp <- count(tab_B07009, vnum, tabvarname, vdescription)
+
+x <- "GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY EDUCATIONAL ATTAINMENT FOR CURRENT RESIDENCE IN THE UNITED STATES%Population 25 years and over in the United States"
+tmp <- count(tab_B07009 %>% 
+               filter(year==2019, vnum %in% c(1, 13, 19, 25, 31)) %>%
+               mutate(vdescription=str_remove(vdescription, x)),
+             vnum, tabvarname, vdescription)
+
+tmp <- tabdescribe %>% filter(table=="B07009")
+#  1 B07009_001 totpop25p
+# 13 B07009_013 Moved within same county
+# 19 B07009_019 Moved from different county within same state
+# 25 B07009_025 Moved from different state
+# 31 B07009_031 Moved from abroad
+
+moveins <- tab_B07009 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est", vnum %in% c(1, 13, 19, 25, 31)) %>%
+  mutate(vnum=factor(vnum, 
+                     levels=c(1, 13, 19, 25, 31), 
+                     labels=c("totpop25p",
+                              "misamecnty",
+                              "misamestate",
+                              "midiffstate",
+                              "miabroad"))) %>%
+  select(year, table, vnum, sgeotype, geoid, usgeoname, value) %>%
+  pivot_wider(names_from = vnum) %>%
+  mutate(movein=(misamecnty + misamestate + midiffstate + miabroad),
+         stay=totpop25p - movein,
+         moveinpct=movein / totpop25p)
+
+moveins %>%
+  filter(str_detect(usgeoname, "Cambridge village"))
+
+#.. moveouts ----
+# note that we don't have moved abroad because they aren't in a U.S. survey anymore!
+tab_B07409 <- readRDS(here::here("data", "tab_B07409.rds"))
+
+x <- "GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY EDUCATIONAL ATTAINMENT FOR RESIDENCE 1 YEAR AGO IN THE UNITED STATES"
+tmp <- count(tab_B07409 %>% 
+               filter(year==2019) %>%
+               filter(vnum %in% c(1, 13, 19, 25)) %>% # no code 31 for moved abroad!!
+               mutate(vdescription=str_remove(vdescription, x)),
+             vnum, tabvarname, vdescription)
+
+moveouts <- tab_B07409 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est", vnum %in% c(1, 13, 19, 25, 31)) %>%
+  mutate(vnum=factor(vnum, 
+                     levels=c(1, 13, 19, 25), 
+                     labels=c("totpop25p",
+                              "mosamecnty",
+                              "mosamestate",
+                              "modiffstate"))) %>%
+  select(year, table, vnum, sgeotype, geoid, usgeoname, value) %>%
+  pivot_wider(names_from = vnum) %>%
+  mutate(moveout=(mosamecnty + mosamestate + modiffstate),
+         stay=totpop25p - moveout,
+         moveoutpct=moveout / totpop25p)
+
+moveouts %>%
+  filter(str_detect(usgeoname, "Cambridge village"))
+
+```
 
 
+```{r tab_netmoves2019}
+
+netmoves1 <- left_join(
+  moveins %>% 
+    filter(year==2019) %>% 
+    select(year, table, sgeotype, geoid, usgeoname, stay, movein),
+  moveouts %>% 
+    filter(year==2019) %>%
+    select(geoid, stay_check=stay, moveout),
+  by="geoid")
+
+tabdata <- netmoves1 %>%
+  filter(!(is.na(movein) | is.na(moveout))) %>%
+  filter(stay == stay_check) %>%
+  select(-stay_check) %>%
+  mutate(movenet=movein - moveout,
+         across(c(movein, moveout, movenet),
+                ~ .x / stay,
+                .names = "pct_{.col}"),
+         rowlab=get_rowlab(sgeotype))
+tabdata
+
+tab <- tabdata %>%
+  gt(groupname_col = "rowlab") %>%
+  cols_hide(c(year, table, sgeotype, geoid)) %>%
+  tab_header(
+    title = "Movement into and out of an area, average for the 5 years ending in 2019",
+    subtitle = "Population 25 years and older"
+      ) %>%
+  cols_label(usgeoname="",
+             stay=html("# in area in current <i>and</i> prior year"),
+             movein="Moved in",
+             moveout="Moved out",
+             movenet="Net moves",
+             pct_movein="Moved in",
+             pct_movein="Moved out",
+             pct_movenet="Net moves") %>%
+  cols_align(align="left", columns = usgeoname) %>%
+  tab_spanner(
+    label = html("Number of people who moved"),
+    columns = c(movein, moveout, movenet)
+    ) %>%
+  tab_spanner(
+    label = html("Moves as % of those who stayed"),
+    columns = c(pct_movein, pct_moveout, pct_movenet)
+    ) %>%
+  fmt_number(
+    columns=c(stay, movein, moveout, movenet),
+    pattern = "{x}",
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = contains("pct"),
+    decimals = 1) %>%
+  # fmt_missing(columns=everything(), missing_text="") %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=str_detect(usgeoname, "Cambridge")
+      )
+    ) %>%
+  cols_width(
+    usgeoname ~ pct(60),
+    everything() ~ pct(40)
+    ) %>%
+  tab_options(
+    table.width = pct(100)
+  )
+
+# webshot options
+# default zoom=2, expand=5
+tab
+gtsave(tab, filename="tab_netmoves2019.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_netmoves2019_data.csv"))
+
+```
+
+```{r tab_moveins_where_2019}
+tabdata <- moveins %>%
+  filter(year==2019) %>%
+  select(year, table, sgeotype, geoid, usgeoname, starts_with("mi"), movein) %>%
+  relocate(movein, .after = usgeoname) %>%
+  mutate(mitot=movein,
+         across(starts_with("mi"), ~ .x / movein),
+         rowlab=get_rowlab(sgeotype))
+
+tab <- tabdata %>%
+  gt(groupname_col = "rowlab") %>%
+  cols_hide(c(year, table, sgeotype, geoid)) %>%
+  tab_header(
+    title = "Movement into an area by previous location, average for the 5 years ending in 2019",
+    subtitle = "Population 25 years and older"
+      ) %>%
+  cols_label(usgeoname="",
+             movein=html("Number who<br>moved in"),
+             misamecnty="Same county",
+             misamestate=html("Different county<br>in the state"),
+             midiffstate="Different state",
+             miabroad="Abroad",
+             mitot="Total") %>%
+  cols_align(align="left", columns = usgeoname) %>%
+  tab_spanner(
+    label = "Previous location (location as % of total who moved in)",
+    columns = starts_with("mi")
+    ) %>%
+  fmt_number(
+    columns=movein,
+    pattern = "{x}",
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = starts_with("mi"),
+    decimals = 1) %>%
+  # fmt_missing(columns=everything(), missing_text="") %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=str_detect(usgeoname, "Cambridge")
+      )
+    ) %>%
+  cols_width(
+    usgeoname ~ pct(60),
+    everything() ~ pct(40)
+    ) %>%
+  tab_options(
+    table.width = pct(100)
+  )
+
+# webshot options
+# default zoom=2, expand=5
+tab
+gtsave(tab, filename="tab_moveins_where_2019.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_moveins_where_2019_data.csv"))
+
+```
+
+
+```{r tab_moveins_age_2019}
+# B07001	 		GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY AGE FOR CURRENT RESIDENCE IN THE UNITED STATES
+
+# B07001	1	B07001_001	Total:
+# B07001	2	B07001_002	1 to 4 years 
+# B07001	3	B07001_003	5 to 17 years 
+# B07001	4	B07001_004	18 and 19 years 
+# B07001	5	B07001_005	20 to 24 years
+# B07001	6	B07001_006	25 to 29 years
+# B07001	7	B07001_007	30 to 34 years
+# B07001	8	B07001_008	35 to 39 years
+# B07001	9	B07001_009	40 to 44 years
+# B07001	10	B07001_010	45 to 49 years
+# B07001	11	B07001_011	50 to 54 years
+# B07001	12	B07001_012	55 to 59 years 
+# B07001	13	B07001_013	60 to 64 years 
+# B07001	14	B07001_014	65 to 69 years 
+# B07001	15	B07001_015	70 to 74 years
+# B07001	16	B07001_016	75 years and over 
+
+tab_B07001 <- readRDS(here::here("data", "tab_B07001.rds"))
+x <- "GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY AGE FOR CURRENT RESIDENCE IN THE UNITED STATES%Population 1 year and over in the United States%"
+tmp <- count(tab_B07001 %>% 
+               filter(year==2019) %>%
+               # filter(vnum %in% c(1, 13, 19, 25)) %>% # no code 31 for moved abroad!!
+               mutate(vdescription=str_remove(vdescription, x)),
+             vnum, tabvarname, vdescription)
+
+
+agegroups <- tab_B07001 %>%
+  filter(year==2019, valtype=="est") %>%
+  mutate(agegroup=case_when(vnum %in% c(1, 17, 33, 49, 65, 81) ~ "total",
+                            str_detect_any(vdescription, 
+                                           c("1 to 4",
+                                             "5 to 17",
+                                             "18 and 19",
+                                             "20 to 24")) ~ "age0124",
+                            str_detect_any(vdescription,
+                                           c("25 to 29", "30 to 34")) ~ "age2534",
+                            str_detect_any(vdescription,
+                                           as.character(seq(35, 60, 5))) ~ "age3564",
+                            str_detect_any(vdescription,
+                                           c("65", "70", "75")) ~ "age65plus",
+                            TRUE ~ paste0(vnum, vdescription)),
+         movestatus=case_when(vnum %in% 1:16 ~ "total",
+                            vnum %in% 17:32 ~ "stay",
+                            vnum %in% 33:96 ~ "movein"))
+
+tabdata <- agegroups %>%
+  filter(movestatus=="movein", geoid %in% subareas$geoid) %>%
+  group_by(year, table, sgeotype, geoid, usgeoname, agegroup) %>%
+  summarise(value=sum(value), .groups="drop") %>%
+  pivot_wider(names_from = agegroup) %>%
+  mutate(tot25p=total - age0124) %>%
+  relocate(tot25p, .after = usgeoname) %>%
+  select(-age0124) %>%
+  select(year, table, sgeotype, geoid, usgeoname, tot25p, starts_with("age")) %>%
+  mutate(agetot=tot25p,
+         across(starts_with("age"), ~ .x / tot25p),
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab)
+
+tab <- tabdata %>%
+  gt(groupname_col = "rowlab") %>%
+  cols_hide(c(year, table, sgeotype, geoid)) %>%
+  tab_header(
+    title = "Movement into an area by age group, average for the 5 years ending in 2019",
+    subtitle = "Population 25 years and older"
+      ) %>%
+  cols_label(usgeoname="",
+             tot25p=html("Number who<br>moved in"),
+             age2534="25 to 34",
+             age3564=html("35 to 65"),
+             age65plus="65 plus",
+             agetot="Total") %>%
+  cols_align(align="left", columns = usgeoname) %>%
+  tab_spanner(
+    label = "Age group (as % of total who moved in)",
+    columns = starts_with("age")
+    ) %>%
+  fmt_number(
+    columns=tot25p,
+    pattern = "{x}",
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = starts_with("age"),
+    decimals = 1) %>%
+  # fmt_missing(columns=everything(), missing_text="") %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=str_detect(usgeoname, "Cambridge")
+      )
+    ) %>%
+  cols_width(
+    usgeoname ~ pct(60),
+    everything() ~ pct(40)
+    ) %>%
+  tab_options(
+    table.width = pct(100)
+  )
+
+# webshot options
+# default zoom=2, expand=5
+tab
+gtsave(tab, filename="tab_moveins_age_2019.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_moveins_age_2019_data.csv"))
+
+```
+
+
+
+```{r _tab_moveins_ownrent}
+# B07013	 		GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY TENURE FOR CURRENT RESIDENCE IN THE UNITED STATES
+# B07013	 		Universe:  Population 1 year and over in households in the United States
+# B07013	1	B07013_001	Total:
+# B07013	2	B07013_002	Householder lived in owner-occupied housing units 
+# B07013	3	B07013_003	Householder lived in renter-occupied housing units  
+# B07013	4	B07013_004	Same house 1 year ago:
+# B07013	5	B07013_005	Householder lived in owner-occupied housing units  
+# B07013	6	B07013_006	Householder lived in renter-occupied housing units  
+# B07013	7	B07013_007	Moved within same county:
+# B07013	8	B07013_008	Householder lived in owner-occupied housing units  
+# B07013	9	B07013_009	Householder lived in renter-occupied housing units  
+# B07013	10	B07013_010	Moved from different county within same state:
+# B07013	11	B07013_011	Householder lived in owner-occupied housing units  
+# B07013	12	B07013_012	Householder lived in renter-occupied housing units  
+# B07013	13	B07013_013	Moved from different state:
+# B07013	14	B07013_014	Householder lived in owner-occupied housing units  
+# B07013	15	B07013_015	Householder lived in renter-occupied housing units  
+# B07013	16	B07013_016	Moved from abroad:
+# B07013	17	B07013_017	Householder lived in owner-occupied housing units  
+# B07013	18	B07013_018	Householder lived in renter-occupied housing units  
+
+```
 
 
 
 # Housing in and around the Village of Cambridge
+
+## Number of units and vacancies
+```{r census_housing_pch}
+cenhu <- readRDS(here::here("data", "cenhousing.rds"))
+
+tabdata <- subareas %>%
+  filter(year==2019) %>%
+  select(geoid, usgeoname) %>%
+  mutate(usgeoname=str_trim(usgeoname)) %>%
+  left_join(cenhu %>%
+              mutate(usgeoname=str_extract_before_first(usgeoname, ",")) %>%
+              select(usgeoname, sgeotype, year, total, occupied),
+            by="usgeoname") %>%
+  filter(!is.na(year)) %>%
+  pivot_wider(names_from = year, values_from = c(total, occupied)) %>%
+  mutate(totpch=total_2020 / total_2010 - 1,
+         occpch=occupied_2020 / occupied_2010 - 1,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab)
+tabdata
+
+
+
+
+tab <- tabdata %>%
+  gt(groupname_col = "rowlab") %>%
+  cols_hide(c(geoid, sgeotype)) %>%
+  tab_header(
+    title = "Number of housing units in 2010 and 2010"
+      ) %>%
+  cols_label(usgeoname="",
+             total_2010=html("2010"),
+             total_2020 ="2020",
+             occupied_2010=html("2010"),
+             occupied_2020=html("2020"),
+             totpch="Total",
+             occpch="Occupied") %>%
+  cols_align(align="left", columns = usgeoname) %>%
+  tab_spanner(
+    label = "# of housing units in total",
+    columns = starts_with("total")
+    ) %>%
+  tab_spanner(
+    label = "# of occupied housing units",
+    columns = starts_with("occupied")
+    ) %>%
+  tab_spanner(
+    label = "% change",
+    columns = contains("pch")
+    ) %>%
+  fmt_number(
+    columns=c(starts_with("total"), starts_with("occupied")),
+    pattern = "{x}",
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = contains("pch"),
+    decimals = 1
+    ) %>%
+  # fmt_missing(columns=everything(), missing_text="") %>%
+  tab_source_note(paste0("Source: ", source_decennialpop, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=str_detect(usgeoname, "Cambridge")
+      )
+    ) %>%
+  cols_width(
+    usgeoname ~ pct(60),
+    everything() ~ pct(40)
+    ) %>%
+  tab_options(
+    table.width = pct(100)
+  )
+  
+tab
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_decennial_housing.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_decennial_housing_data.csv"))
+
+```
+
+
+```{r census_housing_vacpct}
+cenhu <- readRDS(here::here("data", "cenhousing.rds"))
+
+tabdata <- subareas %>%
+  filter(year==2019) %>%
+  select(geoid, usgeoname) %>%
+  mutate(usgeoname=str_trim(usgeoname)) %>%
+  left_join(cenhu %>%
+              mutate(usgeoname=str_extract_before_first(usgeoname, ",")) %>%
+              select(usgeoname, sgeotype, year, total, vacant),
+            by="usgeoname") %>%
+  filter(!is.na(year)) %>%
+  mutate(vacpct=vacant / total) %>%
+  select(year, usgeoname, sgeotype, vacpct) %>%
+  pivot_wider(names_from = year, values_from = vacpct, names_prefix="vacpct") %>%
+  mutate(change=vacpct2020 - vacpct2010,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab)
+tabdata
+
+tab <- tabdata %>%
+  gt(groupname_col = "rowlab") %>%
+  cols_hide(c(sgeotype)) %>%
+  tab_header(
+    title = "Housing vacancy rate in 2010 and 2010"
+      ) %>%
+  cols_label(usgeoname="",
+             vacpct2010 =html("2010"),
+             vacpct2020  ="2020",
+             change="Change") %>%
+  cols_align(align="left", columns = usgeoname) %>%
+  tab_spanner(
+    label = "Vacancy rate",
+    columns = starts_with("vacpct")
+    ) %>%
+  fmt_percent(
+    columns = c(vacpct2010, vacpct2020, change),
+    decimals = 1
+    ) %>%
+  # fmt_missing(columns=everything(), missing_text="") %>%
+  tab_source_note(paste0("Source: ", source_decennialpop, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=str_detect(usgeoname, "Cambridge")
+      )
+    ) %>%
+  cols_width(
+    usgeoname ~ pct(60),
+    everything() ~ pct(40)
+    ) %>%
+  tab_options(
+    table.width = pct(100)
+  )
+  
+tab
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_decennial_housing_vacpct.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_decennial_housing_vacpct_data.csv"))
+
+```
+
+
+## Home value
+```{r tab_mdn_house_value}
+tab_B25077 <- readRDS(here::here("data", "tab_B25077.rds"))
+
+tmp <- count(tab_B25077, vnum, tabvarname, vdescription)
+tmp <- tabdescribe %>% filter(table=="B25077")
+# vnum 1 B25077_001 MEDIAN VALUE (DOLLARS)% Owner-occupied housing units%Median value (dollars)
+
+tabdata <- tab_B25077 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est") %>%
+  select(year, table, sgeotype, geoid, usgeoname, value) %>%
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title="Median value owner-occupied housing, in survey-end-year dollars", 
+                 decimals=0,
+                 type="number")
+tab
+gtsave(tab, filename="tab_mdn_house_value.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_mdn_house_value_data.csv"))
+
+```
+
+
 
 ## Property tax data
 ```{r}
