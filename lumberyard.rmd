@@ -1239,8 +1239,6 @@ tmp %>%
 subareas %>%
   filter(str_detect(usgeoname, "White Creek"))
 
-
-
 ```
 
 
@@ -1288,8 +1286,6 @@ subareas <- geokeep %>%
   select(!contains("keep"))
 
 ```
-
-
 
 
 ```{r get_save_acs_tables}
@@ -1390,17 +1386,46 @@ saveRDS(tab_B19013, here::here("data", "tab_B19013.rds"))
 # spend on housing, and the physical characteristics of homes. The ACS primarily
 # reports housing data in tables with codes beginning with 25.
 
+# Every housing unit is recorded as either occupied or vacant. Some vacancies
+# are market related, such as houses for sale or apartments for rent. Other
+# housing units are seasonally vacant. Table B25004 (Vacancy Status) records the
+# number of vacancies in each category.
 
-#.. B25077 Owner-occupied housing units Median Value (Dollars)  ----
-tab_B25077 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25077")
-tab_B25077
-saveRDS(tab_B25077, here::here("data", "tab_B25077.rds"))
+#.. B25004: Vacancy Status ----
+tab_B25004 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25004")
+tab_B25004
+saveRDS(tab_B25004, here::here("data", "tab_B25004.rds"))
 
 #.. B25008  TOTAL POPULATION IN OCCUPIED HOUSING UNITS BY TENURE ----
 tab_B25008 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25008")
 tab_B25008
 saveRDS(tab_B25008, here::here("data", "tab_B25008.rds"))
 
+#.. B25037	Median Year Structure Built by Tenure ----
+tab_B25037 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25037")
+tab_B25037
+saveRDS(tab_B25037, here::here("data", "tab_B25037.rds"))
+
+#.. B25071: Median Gross Rent as a Percentage of Household Income (Dollars) ----
+tab_B25071 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25071")
+tab_B25071
+saveRDS(tab_B25071, here::here("data", "tab_B25071.rds"))
+
+#.. B25077 Owner-occupied housing units Median Value (Dollars)  ----
+tab_B25077 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25077")
+tab_B25077
+saveRDS(tab_B25077, here::here("data", "tab_B25077.rds"))
+
+#.. B25092: Median Selected Monthly Owner Costs as a Percentage of Household Income ----
+tab_B25092 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25092")
+tab_B25092
+saveRDS(tab_B25092, here::here("data", "tab_B25092.rds"))
+
+#.. B25106	Tenure by Housing Costs as a Percentage of Household Income ----
+# https://censusreporter.org/tables/B25106/
+tab_B25106 <- map_dfr(c(2009, 2014, 2019), get_yeartab, "B25106")
+tab_B25106
+saveRDS(tab_B25106, here::here("data", "tab_B25106.rds"))
 
 
 #.. NO DATA C15003 EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER ----
@@ -2775,7 +2800,7 @@ write_csv(tabdata, file=here::here("results", "tab_moveins_age_2019_data.csv"))
 
 
 
-```{r _tab_moveins_ownrent}
+```{r tab_moveins_ownrent}
 # B07013	 		GEOGRAPHICAL MOBILITY IN THE PAST YEAR BY TENURE FOR CURRENT RESIDENCE IN THE UNITED STATES
 # B07013	 		Universe:  Population 1 year and over in households in the United States
 # B07013	1	B07013_001	Total:
@@ -2975,6 +3000,18 @@ write_csv(tabdata, file=here::here("results", "tab_decennial_housing_vacpct_data
 
 ```
 
+## Kinds of vacancies
+```{r}
+tab_B25004 <- readRDS(here::here("data", "tab_B25004.rds"))
+```
+
+
+## Year structure built
+```{r}
+#.. B25037	Median Year Structure Built by Tenure ----
+tab_B25037 <- readRDS(here::here("data", "tab_B25037.rds"))
+```
+
 
 ## Home value
 ```{r tab_mdn_house_value}
@@ -3004,6 +3041,354 @@ tab <- fch_table(tabdata,
 tab
 gtsave(tab, filename="tab_mdn_house_value.png", path=here::here("results"), zoom=1, expand=10)
 write_csv(tabdata, file=here::here("results", "tab_mdn_house_value_data.csv"))
+
+```
+
+## Costs relative to income
+```{r tab_rentcosts_hhi}
+#.. B25071: Median Gross Rent as a Percentage of Household Income (Dollars) ----
+tab_B25071 <- readRDS(here::here("data", "tab_B25071.rds"))
+# Renter-occupied housing units paying cash rent
+# Median Gross Rent As A Percentage Of Household Income In The Past 12 Months (Dollars)
+
+tmp <- count(tab_B25071, vnum, tabvarname, vdescription)
+tmp <- tabdescribe %>% filter(table=="B25071")
+# vnum 1
+
+tabdata <- tab_B25071 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est") %>%
+  select(year, table, sgeotype, geoid, usgeoname, value) %>%
+  mutate(value=value / 100) %>% # data are in percent
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title="Median gross rent as a percentage of household income", 
+                 decimals=1,
+                 type="percent")
+tab
+gtsave(tab, filename="tab_rentcosts_hhi.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_rentcosts_hhi_data.csv"))
+
+
+```
+
+
+```{r tab_ownercosts_all}
+#.. B25092: Median Selected Monthly Owner Costs as a Percentage of Household Income ----
+tab_B25092 <- readRDS(here::here("data", "tab_B25092.rds"))
+
+
+tmp <- count(tab_B25092, vnum, tabvarname, year, vdescription)
+tmp <- tabdescribe %>% filter(table=="B25092")
+# vnum 1
+
+tabdata <- tab_B25092 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est") %>%
+  filter(vnum==1) %>%  # all units, not just those with mortgage
+  select(year, table, sgeotype, geoid, usgeoname, value) %>%
+  mutate(value=value / 100) %>% # data are in percent
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title="Median selected monthly owner costs as a percentage of household income", 
+                 decimals=1,
+                 type="percent")
+tab
+gtsave(tab, filename="tab_ownercosts_hhi.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_ownercosts_hhi_data.csv"))
+
+```
+
+
+```{r tab_ownercosts_mortgage}
+#.. B25092: Median Selected Monthly Owner Costs as a Percentage of Household Income ----
+tab_B25092 <- readRDS(here::here("data", "tab_B25092.rds"))
+
+
+tmp <- count(tab_B25092, vnum, tabvarname, year, vdescription)
+tmp <- tabdescribe %>% filter(table=="B25092")
+# vnum 1
+
+tabdata <- tab_B25092 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est") %>%
+  filter(vnum==2) %>%  # units with a mortgage
+  select(year, table, sgeotype, geoid, usgeoname, value) %>%
+  mutate(value=value / 100) %>% # data are in percent
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title="Median selected monthly owner costs as a percentage of household income, units with a mortgage", 
+                 decimals=1,
+                 type="percent")
+tab
+gtsave(tab, filename="tab_ownercosts_mortgage_hhi.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_ownercosts_mortgage_hhi_data.csv"))
+
+```
+
+
+
+```{r tab_ownercosts_nomortgage}
+#.. B25092: Median Selected Monthly Owner Costs as a Percentage of Household Income ----
+tab_B25092 <- readRDS(here::here("data", "tab_B25092.rds"))
+
+
+tmp <- count(tab_B25092, vnum, tabvarname, year, vdescription)
+tmp <- tabdescribe %>% filter(table=="B25092")
+# vnum 1
+
+tabdata <- tab_B25092 %>%
+  filter(geoid %in% subareas$geoid, valtype=="est") %>%
+  filter(vnum==3) %>%  # units with a mortgage
+  select(year, table, sgeotype, geoid, usgeoname, value) %>%
+  mutate(value=value / 100) %>% # data are in percent
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title="Median selected monthly owner costs as a percentage of household income, units without a mortgage", 
+                 decimals=1,
+                 type="percent")
+tab
+gtsave(tab, filename="tab_ownercosts_nomortgage_hhi.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_ownercosts_nomortgage_hhi_data.csv"))
+
+```
+
+
+```{r tabbase_costs_pcthhi}
+# #.. B25106	Tenure by Housing Costs as a Percentage of Household Income ----
+tab_B25106 <- readRDS(here::here("data", "tab_B25106.rds"))
+
+tmp <- count(tab_B25106, vnum, tabvarname, year, vdescription)
+tmp <- tabdescribe %>% filter(table=="B25106")
+# vnum 1
+
+# explore
+vmap <- read_excel(here::here("BoydLumberyard.xlsx"), sheet="costburden", range="A1:F47")
+td1 <- tab_B25106 %>%
+  filter(valtype=="est") %>%
+  left_join(vmap, by = c("vnum", "tabvarname"))
+# nrow(tab_B25106) == nrow(td1)
+td1 %>% filter(year==2019, 
+                str_detect(usgeoname, "Cambridge village"), 
+                income=="incall", 
+                tenure=="renter") %>%
+  select(usgeoname, income, tenure, pct, value)
+
+# collapse unknowns
+td2 <- td1 %>%
+  filter(income != "incall", pct!="pctall")  %>%  # will compute totals
+  # create and collapse the other income group
+  mutate(income=ifelse(income %in% c("inczneg", "incunk"), "incother", income)) %>%
+  group_by(table, year, sgeotype, geoid, usgeoname, tenure, income, pct) %>%
+  summarise(value=sum(value), .groups="drop")
+count(td2, income)
+td2 %>% 
+  filter(year==2019, str_detect(usgeoname, "Cambridge village"), tenure=="renter") %>%
+  arrange(income, pct)
+
+# verify totals
+td2 %>% 
+  filter(year==2019, str_detect(usgeoname, "Cambridge village")) %>%
+  group_by(tenure) %>%
+  summarise(value=sum(value))
+
+# construct totals
+inctots <- td2 %>%
+  group_by(table, year, sgeotype, geoid, usgeoname, tenure, pct) %>%
+  summarise(value=sum(value), .groups="drop") %>%
+  mutate(income="incall")
+
+# verify
+inctots %>% 
+  filter(year==2019, 
+         str_detect(usgeoname, "Cambridge village"),
+         income=="incall") %>%
+  group_by(tenure) %>%
+  summarise(value=sum(value))
+
+pcttots <- td2 %>%
+  group_by(table, year, sgeotype, geoid, usgeoname, tenure, income) %>%
+  summarise(value=sum(value), .groups="drop") %>%
+  mutate(pct="pctall")
+
+# verify
+pcttots %>% 
+  filter(year==2019, 
+         str_detect(usgeoname, "Cambridge village"),
+         pct=="pctall") %>%
+  group_by(tenure) %>%
+  summarise(value=sum(value))
+
+
+grandtots <- td2 %>%
+  group_by(table, year, sgeotype, geoid, usgeoname, tenure) %>%
+  summarise(value=sum(value), .groups="drop") %>%
+  mutate(income="incall", pct="pctall")
+
+tdall <- bind_rows(td2, inctots, pcttots, grandtots) %>%
+  arrange(table, year, sgeotype, usgeoname, tenure, income,  pct)
+
+tdall %>% 
+  filter(year==2019, 
+         str_detect(usgeoname, "Cambridge village"),
+         income=="incall",
+         pct=="pctall")
+
+# make wide file with % of units that are 30+% of income
+inclevs <- c("incall", "inclt20k",  "inc2035k", "inc3550k", "inc5075k", "inc75kp", "incother")
+inclabs <- c("All income groups", "< $20,000", "$20,000 to $34,999", "$35,000 to $49,999",
+             "$50,000 to $74,999", "$75,000+", "no income")
+tabbase <- tdall %>%
+  filter(pct %in% c("pct30p", "pctall")) %>%
+  pivot_wider(names_from = pct, values_fill = 0) %>%
+  rename(occunits=pctall) %>%
+  mutate(pct30p=pct30p / occunits)  %>% # ok to generate NA values if occunits is zero
+  pivot_wider(names_from=tenure, values_from = c(occunits, pct30p)) %>%
+  mutate(incomef=factor(income, levels=inclevs, labels=inclabs)) %>%
+  arrange(year, sgeotype, usgeoname, incomef) %>%
+  select(table, year, sgeotype, geoid, usgeoname, income, incomef, contains("owner"), contains("renter")) %>%
+  mutate(occunits_total=occunits_owner + occunits_renter,
+         pct30p_total=(occunits_owner / occunits_total * naz(pct30p_owner) +
+                         occunits_renter / occunits_total * naz(pct30p_renter)))
+# count(tabbase, income)
+# tabbase %>% filter(year==2019, str_detect(usgeoname, "Cambridge village"), income=="incall")
+tabbase %>% filter(year==2019, str_detect(usgeoname, "Cambridge village"))
+
+```
+
+
+```{r tabbase_costs_pcthhi}
+
+tabdata <- tabbase %>%
+  filter(geoid %in% subareas$geoid, income=="incall") %>%
+  select(year, table, sgeotype, geoid, usgeoname, value=pct30p_total) %>%
+  pivot_wider(names_from = year, names_prefix = "y") %>%
+  mutate(ch0914=y2014 - y2009,
+         ch1419=y2019 - y2014,
+         ch0919=y2019 - y2009,
+         rowlab=get_rowlab(sgeotype)) %>%
+  arrange(rowlab, usgeoname)
+tabdata
+
+# webshot options
+# default zoom=2, expand=5
+tab <- fch_table(tabdata, 
+                 .title=html("Percentage of households for which housing costs are 30+% of household income<br>(includes both owners and renters)"), 
+                 decimals=1,
+                 type="percent")
+tab
+gtsave(tab, filename="tab_costs_pcthhi.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_costs_pcthhi_data.csv"))
+
+```
+
+```{r tab_cambvill_costs_pcthhi}
+
+tabdata <- tabbase %>%
+  filter(str_detect(usgeoname, "Cambridge village"), year==2019)
+
+tab <- tabdata %>%
+  gt() %>%
+  cols_hide(c(table, year, sgeotype, geoid, usgeoname, income)) %>%
+  tab_header(
+    title = html("Cambridge village housing units and % of households<br>for which housing costs are 30+% of household income"),
+    subtitle="5 years ending in 2019"
+      ) %>%
+  cols_label(incomef="Income",
+             occunits_owner=html("# of units"),
+             pct30p_owner=html("% with costs 30+ % of income"),
+             occunits_renter=html("# of units"),
+             pct30p_renter=html("% with costs 30+ % of income"),
+             occunits_total=html("# of units"),
+             pct30p_total=html("% with costs 30+ % of income")
+             ) %>%
+  tab_spanner(
+    label = html("Owner-occupied"),
+    columns = contains("owner")
+    ) %>%
+  tab_spanner(
+    label = html("Renter-occupied"),
+    columns = contains("renter")
+    ) %>%
+  tab_spanner(
+    label = html("Total occupied"),
+    columns = contains("total")
+    ) %>%
+  cols_align(align="left", columns = incomef) %>%
+  fmt_number(
+    columns=contains("units"),
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = contains("pct"),
+    decimals = 1) %>%
+  fmt_missing(
+    columns=contains("pct"),
+    missing_text = "-"
+  ) %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_footnote(
+    footnote = "CAUTION: small areas have high margins of error.",
+    # locations = cells_column_labels(columns = starts_with("est"))
+    locations = cells_title(groups="title")
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_row_groups()
+    ) %>%
+  tab_style(
+    style = list(
+      # cell_text(weight = "bold") # size = px(15), , font = "arial"
+      cell_fill(color = "lightcyan")
+      ),
+    locations = cells_body(
+      rows=1
+      )
+    ) %>%
+  cols_width(
+    incomef ~ px(100),
+    contains("units") ~ px(100),
+    contains("pct") ~ px(100)
+  ) 
+
+tab
+gtsave(tab, filename="tab_cambvill_costs_pcthhi.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_cambvill_costs_pcthhi_data.csv"))
 
 ```
 
