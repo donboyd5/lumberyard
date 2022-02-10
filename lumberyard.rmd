@@ -1199,6 +1199,31 @@ dmig <- r"()"
 
 ```
 
+```{r arolls}
+path <- r"(E:\data\local\Assessment rolls\2021_final_rolls\countywide_pacels_extracts011922.xls)"
+df <- read_excel(path)
+df2 <- df %>%
+  setNames(str_to_lower(names(.)))
+
+ns(df2)
+
+
+
+df3 <- df2 %>%
+  filter(str_detect(owner, coll("Boyd", ignore_case = TRUE)),
+         str_detect(owner, coll("Don", ignore_case = TRUE))) %>%
+  select(owner, owner1, owner2, prop_addr, muni, acres, full_marke, sale_price, sale_date)
+
+df3 <- df2 %>%
+  filter(muni=="Jackson") %>%
+  select(owner, owner1, owner2, prop_addr, muni, acres, full_marke, sale_price, sale_date) %>%
+  mutate(ppa=full_marke / acres) %>%
+  arrange(desc(full_marke)) %>%
+  filter(row_number() <= 50)
+
+
+```
+
 
 # DATA ANALYSIS
 ```{r load_data}
