@@ -4,6 +4,10 @@ documents/
 map_data/
 results/
 
+report/.quarto/
+report/_book/
+report/*_cache/
+report/*_files/
 
 # filetypes to ignore
 *.csv

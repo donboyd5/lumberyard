@@ -1,0 +1,42 @@
+project:
+  type: book
+  output-dir: _book
+  pre-render:
+  # - ../r/getdata.r
+  # - ../r/cleandata.r
+  # - ../r/preparemap.r
+  # - _load.r  # always load libraries and get cleaned data
+  # post-render: 
+  # - post_render.r
+
+book:
+  title: "Cambridge Lumberyard"
+  author: "Don Boyd"
+  date: today
+  date-format: long
+  chapters:
+    - index.qmd
+    - intro.qmd
+    # - references.qmd
+    # - clean.qmd  # results of cleaning - don't do actual cleaning here
+    
+
+# title-block-banner: true
+# references.bib
+# bibliography: _Bibliography.bib
+
+execute: 
+  cache: true
+  echo: false
+  warning: false
+  include: false
+
+format:
+  html:
+    theme: cosmo
+    self-contained: false
+  # pdf:
+  #   documentclass: scrreprt
+
+
+
