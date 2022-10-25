@@ -1,0 +1,102 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Population
+
+
+```{r}
+source(here::here("r", "libraries.r"))
+source(here::here("r", "functions_utility.r"))
+
+resdir <- here::here("nyforward", "results")
+
+```
+
+
+## Change in population
+
+```{r}
+washpop <- readRDS(here::here("data", "washpop.rds"))
+# count(washpop, name)
+
+# yrs <- c(2010, 2021)
+yrs <- c(2015, 2020)
+df <- washpop |> 
+  filter(vtype=="estimate",
+         munitype %in% c("county", "village"),
+         year %in% yrs) |> 
+  mutate(name=str_remove(name, " village")) |> 
+  select(name, munitype, year, value) |> 
+  pivot_wider(names_from = year, names_prefix="y") |> 
+  mutate(change=unlist(cur_data()[4]) - unlist(cur_data()[3]),
+         pch=change / unlist(cur_data()[3])) |> 
+  arrange(desc(pch))
+
+p <- df |> 
+  mutate(grp=case_when(str_detect(name, "Washington") ~ "washco",
+                       str_detect(name, "Cambridge") ~ "camb",
+                       TRUE ~ "other"),
+         grp=factor(grp)) |> 
+  ggplot(aes(reorder(name, desc(pch)), pch, fill=grp)) +
+  geom_col() +
+  geom_hline(yintercept = 0) +
+  scale_y_continuous(name="% change", breaks=seq(-1, 1, .01), labels=percent_format(accuracy=1)) +
+  scale_x_discrete(name=NULL) +
+  scale_fill_manual(values=c("darkgreen", "grey70", "blue")) +
+  ggtitle(paste0("Percentage change in population from ", yrs[1], " to ", yrs[2]),
+          subtitle="Washington County and its villages") +
+  theme_bw() +
+  theme(legend.position="none") +
+  theme(axis.text.x = element_text(angle = -30, vjust = 0, hjust=0.5)) 
+
+p 
+ggsave(filename=path(resdir, "pop_bar.png"), p, width=10, height=6)
+
+```
+
+## Change by age group
+
+```{r}
+
+df <- read_csv(
+"group, y2014, y2019, change
+Under 20,	21.80,	25.30,	3.50
+20 to 39,	23.50,	18.80,	-4.70
+40 to 64,	37.60,	33.40,	-4.20
+65 to 79,	13.70,	17.80,	4.10
+80+,	3.50,	4.60,	1.10
+") |> 
+  mutate(across(-group, ~ .x / 100),
+         row=row_number()) |> 
+  arrange(row) |> 
+  mutate(group=factor(group, levels=.data[["group"]]))
+
+dfl <- df |> 
+  pivot_longer(cols=-c(row, group))
+
+
+# aes(fill=condition, y=value, x=specie)) + 
+#     geom_bar(position="dodge", stat="identity")
+
+p <- dfl |> 
+  filter(name != "change") |> 
+  mutate(name=str_sub(name, 2, 5)) |> 
+  arrange(name, group) |> 
+  ggplot(aes(group, value, fill=name)) +
+  geom_col(position="dodge") +
+  scale_y_continuous(name="% of population", breaks=seq(0, 1, .05), labels=percent_format(accuracy=1)) +
+  scale_x_discrete(name="Age group") +
+  scale_fill_manual(values=c("lightgreen", "blue")) +
+  ggtitle(paste0("Age breakdown of Cambridge Village population"),
+          subtitle = "5 years ending in 2014 and 2019") +
+  labs(fill="5 years ending:") +
+  theme_bw()
+
+p
+
+ggsave(filename=path(resdir, "popages_bar.png"), p, width=12, height=8)
+
+```
+

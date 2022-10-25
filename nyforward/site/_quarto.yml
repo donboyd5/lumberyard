@@ -1,0 +1,55 @@
+project:
+  type: book
+  # comments: 
+  #   hypothesis: true
+
+# after checking out a new quarto-cli commit
+# exit terminal here, go to terminal in gitkraken, then
+#   cd C:\Users\donbo\quarto\quarto-cli
+#   .\configure.cmd
+
+# https://quarto.org/docs/computations/execution-options.html    
+# for cell options: https://quarto.org/docs/reference/cells/cells-knitr.html
+execute:
+  eval: true
+  echo: false
+  error: false
+  warning: false
+  message: false  # not sure if allowed
+  note: false  # not sure if allowed
+
+book:
+  title: "NY Forward"
+  author: "Don Boyd"
+  date: today
+  date-format: long
+  chapters:
+    - index.qmd
+    - part: "Population"
+      - pop.qmd
+    - part: "Economy and jobs"
+    - part: "Housing and affordability"
+    - bibliography.qmd  
+      
+    # - part: "Jobs"
+    #   chapters:
+    #   - intro/goals.qmd
+    #   - intro/boyd_questions.qmd
+    # - part: "Quality of Life"
+    #   chapters: 
+    #   - taxes/current_taxes.qmd
+    # - bibliography.qmd      
+    # - part: "Appendix: Project notes"
+    #   chapters:
+    #   - project/schedule.qmd
+
+bibliography: _bibliography.bib
+nocite: |
+  @*
+
+format:
+  html:
+    theme: cosmo
+  # pdf:
+  #   documentclass: scrreprt
+

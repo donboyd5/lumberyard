@@ -112,11 +112,15 @@ str(tmp)
 tmp$name
 camb1$osm_points$geometry
 
-# bbx should be wsen
+# bbx should be wsen (swne)
  
 library(ggmap)
 cmap <- get_map(getbb("Cambridge ny"), maptype = "toner-background")
-ggmap(cmap)
+ggmap(cmap, extent = "normal")
+ggmap(cmap, extent = "device")
+
+hdf <- get_map("houston, texas")
+ggmap(hdf, extent = "normal")
 
 ggplot() +
   geom_sf(data = lagos_hospitals$osm_polygons)
@@ -275,107 +279,13 @@ saveRDS(battriver_)
 battriver
 ggmap(battriver)
 
+# business filings ----
+# https://data.ny.gov/browse?category=Economic+Development&utf8=%E2%9C%93
+# https://data.ny.gov/Economic-Development/Department-of-State-Business-Filings-Beginning-199/m7i3-tv6j
+# https://data.ny.gov/Economic-Development/Active-Corporations-Beginning-1800/n9v6-gdp6
+# https://data.ny.gov/widgets/n9v6-gdp6
 
-# get all/most places in a bounding box ----
-library(googleway)
-westmain9 <- c(43.02798717413951, -73.38200152883553)
-# get places near 9 west main - but won't be able to get details with this kind of query
-item1 <- google_places(location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item1$status
-item2 <- google_places(page_token=item1$next_page_token, location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item2$status
-item3 <- google_places(page_token=item2$next_page_token, location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item3$status
-item4 <- google_places(page_token=item3$next_page_token, location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item4$status
-item5 <- google_places(page_token=item4$next_page_token, location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item5$status
-item6 <- google_places(page_token=item5$next_page_token, location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item6$status
-item7 <- google_places(page_token=item6$next_page_token, location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item7$status
-item8 <- google_places(page_token=item7$next_page_token, location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item8$status
-item9 <- google_places(page_token=item8$next_page_token, location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item9$status
-item10 <- google_places(page_token=item9$next_page_token, location=westmain9, rankby = "distance", place_type="establishment", key=GGMAP_GOOGLE_API_KEY)
-item10$status
-
-
-ilist <- paste0("item", 1:10)
-
-f1 <- function(itemname){
-  print(itemname)
-  plist <- get(itemname)$results |> pull(place_id)
-  tibble(placeid=plist, item=itemname)
-}
-# f1(ilist[2])
-places_df <- map_dfr(ilist, f1)
-duplicated(places_df$placeid) # duplicated after 60th place (item 3)
-
-# now get details for each place identified
-f <- function(placeid){
-  print(placeid)
-  google_place_details(
-    place_id=placeid,
-    language = NULL,
-    simplify = TRUE,
-    curl_proxy = NULL,
-    key = GGMAP_GOOGLE_API_KEY)
-}
-
-placelist <- purrr::map(places_df$placeid[1:60], f)
-saveRDS(placelist, here::here("data", "placelist.rds"))
-
-str(placelist[[1]]$result)
-class(placelist[[1]]$result)
-
-placelist[[1]]$result
-
-f2 <- function(i){
-  p <- placelist[[i]]$result
-  gl <- p$geometry$location
-  tibble(placeid=p$place_id,
-         name=p$name,
-         lat=gl$lat, 
-         lng=gl$lng,
-         address=p$formatted_address,
-         phone=p$formatted_phone_number,
-         status=p$business_status,
-         vicinity=p$vicinity,
-         website=p$website,
-         nratings=p$user_ratings_total,
-         rating=p$rating,
-         types=list(p$types),
-         reviews=list(p$reviews))
-}
-f2(1)
-
-df <- map_dfr(1:60, f2)
-sort(df$name)
-
-df |> filter(str_detect(name, "BellaVino"))
-
-tmp <- df |> arrange(lng)
-count(tmp, status)
-
-
-# only can get 60; maybe issue 4 separate calls at 4 points on the perimeter of the bounding box (middle of each segment)
-
-names(placelist)
-i <- 5
-# names(placelist[[i]]$result)
-# placelist[[i]]$result
-placelist[[i]]$result$place_id
-placelist[[i]]$result$name
-placelist[[i]]$result$international_phone_number
-placelist[[i]]$result$business_status
-placelist[[i]]$result$formatted_address
-placelist[[i]]$result$types
-placelist[[i]]$result$user_ratings_total
-placelist[[i]]$result$rating
-placelist[[i]]$result$website
-
+# get all/most places in a bounding box or similar area ----
 
 # end ----
   

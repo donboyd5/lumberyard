@@ -1,29 +1,45 @@
 
+
+# notes -------------------------------------------------------------------
+
+# https://github.com/hrecht/censusapi
+# https://www.hrecht.com/censusapi/
+
+
+# documentation -----------------------------------------------------------
+# variable info here:
+# https://www.census.gov/data/tables/time-series/demo/popest/2020s-total-cities-and-towns.html
+
+
+# libraries ---------------------------------------------------------------
+
 source(here::here("r", "libraries.r"))
 source(here::here("r", "functions_utility.r"))
 
 # devtools::install_github("hrecht/censusapi")
 library(censusapi)
 
-# https://github.com/hrecht/censusapi
-# https://www.hrecht.com/censusapi/
 
-
-# djb ---------------------------------------------------------------------
-
-# uny_20102016 appears to be the last vintage that includes village of Salem
+# urls and file names -----------------------------------------------------
+# uny_20102016 for 2010-2016 -- appears to be last vintage that includes village of Salem - in case we want Salem
 uny_20102016 <- "https://www2.census.gov/programs-surveys/popest/datasets/2010-2016/cities/totals/sub-est2016_36.csv"
 
+# most recent vintage for 2010-2020
 uny_20102020 <- "https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/cities/SUB-EST2020_36.csv"
 path_file(uny_20102020)
 
+# 2020+ data
 uny_20202021 <- "https://www2.census.gov/programs-surveys/popest/datasets/2020-2021/cities/totals/sub-est2021_36.csv"
 path_file(uny_20202021)
 
+
+# download poipulation estimates ---------------------------------------------------------------------
 download.file(uny_20102020, here::here("data", path_file(uny_20102020)), mode="wb")
 download.file(uny_20202021, here::here("data", path_file(uny_20202021)), mode="wb")
 
 
+# read the pop estimates  -------------------------------------------------
+# get the two time periods
 pop1 <- read_csv(here::here("data", path_file(uny_20102020)), col_types = cols(.default = col_character()))
 pop2 <- read_csv(here::here("data", path_file(uny_20202021)), col_types = cols(.default = col_character()))
 
@@ -32,40 +48,121 @@ glimpse(pop2)
 idvars <- intersect(names(pop1), names(pop2)) |> str_subset("POPESTIMATE2020", negate = TRUE)
 (idvars <- str_to_lower(idvars))
 
+
+## long files ----
 pop1a <- pop1 |> lcnames() |> pivot_longer(cols = -all_of(idvars), names_to = "variable")
 pop2a <- pop2 |> lcnames() |> pivot_longer(cols = -all_of(idvars), names_to = "variable")
 
+## combine time periods ----
 pop3 <- bind_rows(pop1a |> mutate(src="2010"),
                   pop2a |> mutate(src="2020")) |> 
   mutate(value=as.numeric(value))
 glimpse(pop3)
 summary(pop3)
-tmp <- pop3 |> filter(is.na(value))
+
+# Investigate before cleaning file ----
+## why NAs? what happened to Salem? ----
+pop3 |> filter(is.na(value)) # Kiryas Joel and a few other places
+
+# look at the Salem records in the two time periods
+pop1 |> 
+  filter(COUNTY=="115", str_detect(NAME, "Salem")) |> 
+  pull(NAME) # we only have the town in this vintage
+
+pop2 |> 
+  filter(COUNTY=="115", str_detect(NAME, "Salem")) |> 
+  pull(NAME) # we only have the town in this vintage
+
+pop3 |> filter(county=="115", str_detect(name, "Salem"))
+
+## play around to figure out geography ----
 tmp <- pop3 |> filter(county=="115")
 count(tmp, place, cousub, concit, primgeo_flag, funcstat, name)
+count(tmp |> filter(place!="00000"), place, cousub, concit, primgeo_flag, funcstat, name)
+count(tmp |> filter(place!="00000", primgeo_flag=="0"), place, cousub, concit, primgeo_flag, funcstat, name)
 
-# figure out geography
-tmp <- pop3 |> 
-  filter(county=="115", funcstat!="F")
-pop3 |> filter(county=="115", str_detect(name, "Salem"))
+# how to identify just the munis we want?
+# place 00000 gives Wash Co (cousub 00000), all towns
+# place !00000 
+#   and funcstat F gives balances
+#   and primgeo_flag 0 gives villages (funcstat A) and balance county (funcstat F)
+
+cntyrec <- expression(place=="00000" & cousub=="00000")
+vlgrec <- expression(place!="00000" & cousub=="00000" & primgeo_flag=="0" & funcstat=="A")
+townrec <- expression(place=="00000" & cousub!="00000")
+
+count(tmp |> filter(eval(cntyrec)), place, cousub, concit, primgeo_flag, funcstat, name)
+count(tmp |> filter(eval(vlgrec)), place, cousub, concit, primgeo_flag, funcstat, name)
+count(tmp |> filter(eval(townrec)), place, cousub, concit, primgeo_flag, funcstat, name)
 
 count(washco, place, cousub, concit, primgeo_flag, funcstat, name)
 
+# note that we have two values for popestimate2020 -- one from the 2010 file and one from the 2020 file
 tmp |> 
   filter(name=="Hudson Falls village", primgeo_flag=="0", str_detect(variable, "popestimate20"))
 
-washco1 <- pop3 |> 
-  # filter(county=="115", funcstat!="F", primgeo_flag=="0", str_detect(variable, "popestimate20")) |>
-  filter(county=="115", funcstat!="F", str_detect(variable, "popestimate20"),
-         !str_detect(name, "(pt.)")) |> 
-  filter(!(variable=="popestimate2020" & src=="2010")) |> # use the 2020 src value
-  mutate(year=str_sub(variable, -4, -1) |> as.integer()) |> 
-  arrange(place, name, year)
+tmp |> 
+  filter(eval(vlgrec), str_detect(name, "Cambridge"), str_detect(variable, "popestimate20"))
 
-count(washco1, name)
+tmp |> 
+  filter(eval(vlgrec), str_detect(name, "Cambridge"))
 
-washco1 |> 
-  filter(str_detect(name, "Argyle village"), year==2021)
+count(tmp, variable)
+
+# create a Washington County file ----
+cntyrec <- expression(place=="00000" & cousub=="00000")
+vlgrec <- expression(place!="00000" & cousub=="00000" & primgeo_flag=="0" & funcstat=="A")
+townrec <- expression(place=="00000" & cousub!="00000")
+
+estpop <- expression(str_detect(variable, "popestimate20") &
+                      !(variable=="popestimate2020" & src=="2010")) # use the 2020 source for 2020
+cenpop <- expression(variable %in% c("census2010pop", "estimatesbase2020"))
+
+washco_ests1 <- pop3 |> 
+  mutate(munitype=case_when(eval(cntyrec) ~ "county",
+                            eval(vlgrec) ~ "village",
+                            eval(townrec) ~ "town",
+                            TRUE ~ "other"),
+         vtype=case_when(eval(estpop) ~ "estimate",
+                         eval(cenpop) ~ "census",
+                         TRUE ~ "other")) |> 
+  filter(county=="115") |> 
+  filter(eval(cntyrec) | eval(vlgrec) | eval(townrec)) |> 
+  mutate(year=ifelse(variable=="census2010pop", "2010", str_sub(variable, -4, -1)),
+         year=as.integer(year)) |> 
+  arrange(place, cousub, name, year)
+glimpse(washco_ests1)
+count(washco_ests1, name)
+count(washco_ests1, vtype)
+count(washco_ests1, munitype)
+
+saveRDS(washco_ests1, here::here("data", "washpop.rds"))
+
+
+# explore pop changes -----------------------------------------------------
+washpop <- readRDS(here::here("data", "washpop.rds"))
+count(washpop, name)
+
+yrs <- c(2010, 2021)
+yrs <- c(2015, 2021)
+washpop |> 
+  filter(vtype=="estimate",
+         munitype %in% c("county", "village"),
+         year %in% yrs) |> 
+  select(name, year, value) |> 
+  pivot_wider(names_from = year, names_prefix="y") |> 
+  mutate(change=unlist(cur_data()[3]) - unlist(cur_data()[2]),
+         pch=change / unlist(cur_data()[2])) |> 
+  arrange(desc(pch))
+
+washpop |> 
+  filter(vtype=="estimate",
+         year %in% c(2010, 2021)) |> 
+  select(name, year, value) |> 
+  pivot_wider(names_from = year, names_prefix="y") |> 
+  mutate(change=y2021 - y2010, pch=change / y2010) |> 
+  arrange(desc(pch))
+
 
 washco1 |> 
   filter(str_detect(name, "Washington"))
@@ -219,6 +316,12 @@ acs_simple <- getCensus(
 
 
 apis <- listCensusApis()
+
+tmp <- count(apis, title, sort=TRUE)
+
+tmp <- apis |> 
+  filter(str_detect(title, coll("decennial", ignore_case = TRUE)))
+tmp1 <- tmp |> filter(vintage==2010)
 
 popapis <- apis  |> 
   filter(str_detect(contact, coll("population.estimate", ignore_case = TRUE)))
